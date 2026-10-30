@@ -52,6 +52,7 @@ public static class DependencyInjection
         });
         services.AddSingleton<IRefreshGraceStore, RedisRefreshGraceStore>();
         services.AddSingleton<ILoginThrottle, RedisLoginThrottle>();
+        services.AddSingleton<ISessionCache, RedisSessionCache>();
 
         // Email: transactional outbox + background delivery
         if (string.IsNullOrWhiteSpace(config[$"{SmtpOptions.Section}:Host"]))

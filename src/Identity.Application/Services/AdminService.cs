@@ -1,4 +1,5 @@
 using Identity.Application.Abstractions.Persistence;
+using Identity.Application.Abstractions.Security;
 using Identity.Application.Common;
 using Identity.Application.Dtos;
 using Identity.Domain.Entities;
@@ -16,6 +17,7 @@ public sealed class AdminService(
     IAuditLogRepository auditLog,
     IUnitOfWork uow,
     AuditTrail audit,
+    ISessionCache sessionCache,
     TimeProvider clock)
 {
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
@@ -52,6 +54,7 @@ public sealed class AdminService(
             user.UserRoles.Add(new UserRole { UserId = user.Id, Role = role });
             audit.Record(AuditActions.AdminRoleAssigned, actingUserId, userId, new { role = role.Name });
             await uow.SaveChangesAsync(ct);
+            await sessionCache.InvalidateUserAsync(userId, ct); // cached sessions carry the roles
         }
         return user.ToAdminResponse();
     }
@@ -73,6 +76,7 @@ public sealed class AdminService(
         user.UserRoles.Remove(link);
         audit.Record(AuditActions.AdminRoleRemoved, actingUserId, userId, new { role = link.Role.Name });
         await uow.SaveChangesAsync(ct);
+        await sessionCache.InvalidateUserAsync(userId, ct);
         return user.ToAdminResponse();
     }
 
@@ -91,6 +95,7 @@ public sealed class AdminService(
             users.Remove(user);
             await uow.SaveChangesAsync(t);
         }, ct);
+        await sessionCache.InvalidateUserAsync(userId, ct);
     }
 
     public async Task<AdminUserResponse> RestoreUserAsync(Guid actingUserId, Guid userId, CancellationToken ct = default)

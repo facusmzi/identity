@@ -37,7 +37,13 @@ Dependencias: `Api → Application ← Infrastructure` y `Application → Domain
 ## Sesiones y tokens
 
 - Access token **JWT RS256** (15 min). En cada request se valida que la sesión siga viva y que el usuario no esté
-  borrado; los roles se leen de la base, así que un cambio de rol aplica al instante.
+  borrado, y se cargan sus roles.
+- **Caché de sesiones** (Redis, `Auth:SessionCacheSeconds`, 30 s; 0 la apaga): esa validación sale de Redis en vez de
+  la base. Igual, revocar una sesión, cambiar roles o la contraseña, o borrar el usuario aplica **en el request
+  siguiente**: cada uno de esos caminos incrementa un número de generación por usuario después del commit, y una
+  entrada solo sirve si se escribió con la generación vigente (así una lectura vieja que se escribe tarde nunca se
+  usa). Si Redis no está disponible se valida contra la base sin esperar timeouts; si una invalidación se pierde por
+  una caída de Redis, lo cacheado vive como mucho esos 30 s.
 - Las claves públicas se publican en `/.well-known/jwks.json` (y `/.well-known/openid-configuration`). Otros servicios
   validan los tokens solos, sin poder firmarlos:
   `AddJwtBearer(o => { o.Authority = "https://identity.tu-dominio.com"; o.Audience = "identity"; })`

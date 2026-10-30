@@ -8,6 +8,12 @@ public sealed class AuthOptions
     /// <summary>Long enough for client retries and parallel requests; every second is also a window for a stolen token.</summary>
     public int RefreshGraceSeconds { get; set; } = 5;
 
+    /// <summary>
+    /// How long a validated session is served from cache (0 disables it). Revocations still apply immediately;
+    /// this only bounds how stale things get if an invalidation is lost (e.g. Redis down at that moment).
+    /// </summary>
+    public int SessionCacheSeconds { get; set; } = 30;
+
     public int VerificationCodeMinutes { get; set; } = 15;
     public int VerificationResendCooldownSeconds { get; set; } = 60;
 

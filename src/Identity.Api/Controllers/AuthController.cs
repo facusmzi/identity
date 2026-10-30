@@ -69,7 +69,7 @@ public sealed class AuthController(AuthService auth) : ControllerBase
     [HttpPost("logout")]
     public async Task<IActionResult> Logout(CancellationToken ct)
     {
-        await auth.LogoutAsync(User.GetSessionId(), ct);
+        await auth.LogoutAsync(User.GetUserId(), User.GetSessionId(), ct);
         return Ok(new { message = "Logged out" });
     }
 

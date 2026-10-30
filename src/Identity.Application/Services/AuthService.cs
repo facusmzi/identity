@@ -22,6 +22,7 @@ public sealed class AuthService(
     ITokenService tokens,
     IRefreshGraceStore graceStore,
     ILoginThrottle loginThrottle,
+    ISessionCache sessionCache,
     IEmailOutbox outbox,
     AuditTrail audit,
     TimeProvider clock,
@@ -191,11 +192,20 @@ public sealed class AuthService(
         return result;
     }
 
-    public async Task LogoutAsync(Guid sessionId, CancellationToken ct = default) =>
-        await sessions.RevokeAsync(sessionId, Now, ct);
+    // Every path that revokes sessions or changes what a cached session holds calls
+    // sessionCache.InvalidateUserAsync right after committing (see ISessionCache).
 
-    public async Task LogoutAllAsync(Guid userId, CancellationToken ct = default) =>
+    public async Task LogoutAsync(Guid userId, Guid sessionId, CancellationToken ct = default)
+    {
+        await sessions.RevokeAsync(sessionId, Now, ct);
+        await sessionCache.InvalidateUserAsync(userId, ct);
+    }
+
+    public async Task LogoutAllAsync(Guid userId, CancellationToken ct = default)
+    {
         await sessions.RevokeAllForUserAsync(userId, Now, ct: ct);
+        await sessionCache.InvalidateUserAsync(userId, ct);
+    }
 
     public async Task ChangePasswordAsync(Guid userId, Guid currentSessionId, ChangePasswordRequest req, CancellationToken ct = default)
     {
@@ -214,6 +224,7 @@ public sealed class AuthService(
             await uow.SaveChangesAsync(t);
             await sessions.RevokeAllForUserAsync(userId, Now, exceptSessionId: currentSessionId, t);
         }, ct);
+        await sessionCache.InvalidateUserAsync(userId, ct);
     }
 
     /// <summary>
@@ -257,6 +268,7 @@ public sealed class AuthService(
             await uow.SaveChangesAsync(t);
             await sessions.RevokeAllForUserAsync(user.Id, Now, ct: t);
         }, ct);
+        await sessionCache.InvalidateUserAsync(user.Id, ct);
         await loginThrottle.ResetAsync(user.Email, ct);
     }
 
@@ -283,6 +295,7 @@ public sealed class AuthService(
             users.Remove(user);
             await uow.SaveChangesAsync(t);
         }, ct);
+        await sessionCache.InvalidateUserAsync(userId, ct);
     }
 
     /// <summary>
@@ -305,6 +318,7 @@ public sealed class AuthService(
             await sessions.RevokeAsync(session.Id, Now, t);
             await uow.SaveChangesAsync(t);
         }, ct);
+        await sessionCache.InvalidateUserAsync(session.UserId, ct);
         logger.LogWarning("Refresh token reuse detected for session {SessionId} of user {UserId}; session revoked",
             session.Id, session.UserId);
         throw new UnauthorizedException("Refresh token reuse detected, session revoked", "REFRESH_TOKEN_REUSED");

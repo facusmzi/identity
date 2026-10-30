@@ -12,6 +12,7 @@ using Microsoft.Extensions.Options;
 using Identity.Application.Options;
 using Identity.Application.Abstractions.Security;
 using Identity.Application.Dtos;
+using Identity.Application.Services;
 using Identity.Infrastructure.Messaging;
 using Identity.Infrastructure.Persistence;
 using Identity.Infrastructure.Persistence.Interceptors;
@@ -132,6 +133,9 @@ public class IdentityFactory : TestHostFactory
 
             services.RemoveAll<ILoginThrottle>();
             services.AddSingleton<ILoginThrottle, InMemoryLoginThrottle>();
+
+            services.RemoveAll<ISessionCache>();
+            services.AddSingleton<ISessionCache, InMemorySessionCache>();
         });
     }
 
@@ -206,6 +210,32 @@ public sealed class InMemoryLoginThrottle(IOptions<AuthOptions> options) : ILogi
     {
         _failures.TryRemove(email, out _);
         _locks.TryRemove(email, out _);
+        return Task.CompletedTask;
+    }
+}
+
+/// <summary>Same generation semantics as RedisSessionCache, in memory.</summary>
+public sealed class InMemorySessionCache : ISessionCache
+{
+    private readonly ConcurrentDictionary<Guid, (SessionPrincipal Principal, long Generation, DateTime ExpiresAt)> _entries = new();
+    private readonly ConcurrentDictionary<Guid, long> _generations = new();
+
+    public Task<(SessionPrincipal? Principal, long Generation)> GetAsync(Guid sessionId, Guid userId, CancellationToken ct = default)
+    {
+        var generation = _generations.GetValueOrDefault(userId);
+        var hit = _entries.TryGetValue(sessionId, out var e) && e.Generation == generation && e.ExpiresAt > DateTime.UtcNow;
+        return Task.FromResult<(SessionPrincipal?, long)>((hit ? e.Principal : null, generation));
+    }
+
+    public Task SetAsync(SessionPrincipal principal, long generation, TimeSpan ttl, CancellationToken ct = default)
+    {
+        _entries[principal.SessionId] = (principal, generation, DateTime.UtcNow + ttl);
+        return Task.CompletedTask;
+    }
+
+    public Task InvalidateUserAsync(Guid userId, CancellationToken ct = default)
+    {
+        _generations.AddOrUpdate(userId, 1, (_, g) => g + 1);
         return Task.CompletedTask;
     }
 }
