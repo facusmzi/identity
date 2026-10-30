@@ -5,3 +5,5 @@ obj/
 *.user
 TestResults/
 appsettings.*.local.json
+.keys/
+artifacts/

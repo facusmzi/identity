@@ -4,6 +4,15 @@ using Identity.Domain.Common;
 
 namespace Identity.Infrastructure.Persistence.Repositories;
 
+/// <summary>
+/// Base repository for soft-deletable entities.
+/// <para>
+/// WARNING: never call <c>ExecuteDelete</c>/<c>ExecuteDeleteAsync</c> on a soft-deletable entity. Bulk
+/// operations bypass SaveChanges, so <see cref="Interceptors.AuditAndSoftDeleteInterceptor"/> never sees them
+/// and the rows are physically deleted. The only allowed hard deletes are the explicit retention purges
+/// (methods named <c>Purge*</c>); <c>ArchitectureTests</c> fails the build for any other use.
+/// </para>
+/// </summary>
 public class Repository<T>(AppDbContext db) : IRepository<T> where T : BaseEntity
 {
     protected AppDbContext Db { get; } = db;

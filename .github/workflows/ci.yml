@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore && dotnet tool restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      # Fails if the model changed without a migration.
+      - name: Migrations up to date
+        run: dotnet ef migrations has-pending-model-changes -p src/Identity.Infrastructure -s src/Identity.Api -c Release --no-build
+
+      # Includes the Postgres/Redis suite (Testcontainers uses the runner's Docker).
+      - name: Test
+        run: dotnet test --no-build -c Release --logger trx --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults
+
+  images:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API image
+        run: docker build -f Containerfile --target runtime -t identity-api:${{ github.sha }} .
+      - name: Build migrator image
+        run: docker build -f Containerfile --target migrator -t identity-migrator:${{ github.sha }} .

@@ -22,8 +22,8 @@ public sealed class UserRepository(AppDbContext db) : Repository<User>(db), IUse
     public Task<bool> EmailExistsAsync(string email, CancellationToken ct = default) =>
         Set.AnyAsync(u => u.Email == email, ct);
 
-    public Task<bool> AnyInRoleAsync(string roleName, CancellationToken ct = default) =>
-        Db.UserRoles.AnyAsync(ur => ur.Role.Name == roleName && ur.User.DeletedAt == null, ct);
+    public Task<bool> AnyOtherInRoleAsync(string roleName, Guid exceptUserId, CancellationToken ct = default) =>
+        Db.UserRoles.AnyAsync(ur => ur.Role.Name == roleName && ur.UserId != exceptUserId && ur.User.DeletedAt == null, ct);
 
     public async Task<PagedResult<User>> ListAsync(int page, int pageSize, bool includeDeleted, CancellationToken ct = default)
     {

@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+.git/
+.keys/
+**/.keys/
+artifacts/
+TestResults/
+tests/
+*.user

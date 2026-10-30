@@ -10,63 +10,69 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Identity.Application.Options;
-using Identity.Application.Abstractions.Messaging;
 using Identity.Application.Abstractions.Security;
 using Identity.Application.Dtos;
+using Identity.Infrastructure.Messaging;
 using Identity.Infrastructure.Persistence;
 using Identity.Infrastructure.Persistence.Interceptors;
 
 namespace Identity.Tests;
 
-/// <summary>Runs the real API with SQLite in-memory instead of Postgres and in-memory fakes for Redis/SMTP.</summary>
-public class IdentityFactory : WebApplicationFactory<Program>
+/// <summary>
+/// The real API in the "Testing" environment (ephemeral signing key, cheap Argon2, no rate limits). Emails go
+/// through the real outbox; background workers are off and tests deliver pending emails on demand, so nothing
+/// runs concurrently with the request under test.
+/// </summary>
+public abstract class TestHostFactory : WebApplicationFactory<Program>
 {
     public const string AdminEmail = "admin@test.local";
     public const string AdminPassword = "Admin12345";
 
-    private readonly SqliteConnection _connection = new("DataSource=:memory:");
-
-    public CapturingEmailSender Emails { get; } = new();
+    public CapturingEmailTransport Emails { get; } = new();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        _connection.Open();
-
         builder.UseEnvironment("Testing");
-        builder.UseSetting("Jwt:Secret", "test-secret-test-secret-test-secret-123");
         builder.UseSetting("PasswordHashing:MemoryKb", "1024");
         builder.UseSetting("PasswordHashing:Iterations", "1");
         builder.UseSetting("PasswordHashing:Parallelism", "1");
         builder.UseSetting("RateLimiting:StrictPermitLimit", "10000");
         builder.UseSetting("RateLimiting:PermitLimit", "10000");
         builder.UseSetting("Auth:VerificationResendCooldownSeconds", "0");
+        builder.UseSetting("Outbox:Enabled", "false");
+        builder.UseSetting("Retention:Enabled", "false");
         builder.UseSetting("Seed:AdminEmail", AdminEmail);
         builder.UseSetting("Seed:AdminPassword", AdminPassword);
 
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<IDbContextOptionsConfiguration<AppDbContext>>();
-            services.AddDbContext<AppDbContext>((sp, options) => options
-                .UseSqlite(_connection)
-                .UseSnakeCaseNamingConvention()
-                .AddInterceptors(sp.GetRequiredService<AuditAndSoftDeleteInterceptor>()));
-
-            services.RemoveAll<IRefreshGraceStore>();
-            services.AddSingleton<IRefreshGraceStore, InMemoryRefreshGraceStore>();
-
-            services.RemoveAll<IEmailSender>();
-            services.AddSingleton<IEmailSender>(Emails);
-
-            services.RemoveAll<ILoginThrottle>();
-            services.AddSingleton<ILoginThrottle, InMemoryLoginThrottle>();
+            services.RemoveAll<IEmailTransport>();
+            services.AddSingleton<IEmailTransport>(Emails);
         });
     }
 
-    protected override void Dispose(bool disposing)
+    public async Task<int> DispatchEmailsAsync()
     {
-        base.Dispose(disposing);
-        _connection.Dispose();
+        await using var scope = Services.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<OutboxProcessor>().DispatchPendingAsync();
+    }
+
+    public async Task<string> LastCodeAsync(string email)
+    {
+        await DispatchEmailsAsync();
+        return Emails.LastCodeFor(email);
+    }
+
+    public async Task<string?> LastResetTokenAsync(string email)
+    {
+        await DispatchEmailsAsync();
+        return Emails.LastResetTokenFor(email);
+    }
+
+    public async Task<int> CodesSentToAsync(string email)
+    {
+        await DispatchEmailsAsync();
+        return Emails.CodesSentTo(email);
     }
 
     public async Task<T> WithDbAsync<T>(Func<AppDbContext, Task<T>> action)
@@ -75,12 +81,18 @@ public class IdentityFactory : WebApplicationFactory<Program>
         return await action(scope.ServiceProvider.GetRequiredService<AppDbContext>());
     }
 
+    public async Task WithScopeAsync(Func<IServiceProvider, Task> action)
+    {
+        await using var scope = Services.CreateAsyncScope();
+        await action(scope.ServiceProvider);
+    }
+
     /// <summary>Registers, verifies and logs in a fresh user.</summary>
     public async Task<(HttpClient Client, AuthTokensResponse Tokens)> CreateVerifiedUserAsync(string email, string password = "Passw0rd!")
     {
         var client = CreateClient();
         (await client.PostAsJsonAsync("/auth/register", new { email, password })).EnsureSuccessStatusCode();
-        (await client.PostAsJsonAsync("/auth/verify-email", new { email, code = Emails.LastCodeFor(email), password })).EnsureSuccessStatusCode();
+        (await client.PostAsJsonAsync("/auth/verify-email", new { email, code = await LastCodeAsync(email), password })).EnsureSuccessStatusCode();
         var tokens = await LoginAsync(client, email, password);
         return (client, tokens);
     }
@@ -95,23 +107,71 @@ public class IdentityFactory : WebApplicationFactory<Program>
     }
 }
 
-public sealed class CapturingEmailSender : IEmailSender
+/// <summary>SQLite in-memory instead of Postgres and in-memory fakes for Redis. Fast; used by most tests.</summary>
+public class IdentityFactory : TestHostFactory
+{
+    private readonly SqliteConnection _connection = new("DataSource=:memory:");
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        // WithWebHostBuilder re-runs this for derived factories sharing the connection.
+        if (_connection.State != System.Data.ConnectionState.Open) _connection.Open();
+        base.ConfigureWebHost(builder);
+
+        builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<DbContextOptions<AppDbContext>>();
+            services.RemoveAll<IDbContextOptionsConfiguration<AppDbContext>>();
+            services.AddDbContext<AppDbContext>((sp, options) => options
+                .UseSqlite(_connection)
+                .UseSnakeCaseNamingConvention()
+                .AddInterceptors(sp.GetRequiredService<AuditAndSoftDeleteInterceptor>()));
+
+            services.RemoveAll<IRefreshGraceStore>();
+            services.AddSingleton<IRefreshGraceStore, InMemoryRefreshGraceStore>();
+
+            services.RemoveAll<ILoginThrottle>();
+            services.AddSingleton<ILoginThrottle, InMemoryLoginThrottle>();
+        });
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        _connection.Dispose();
+    }
+}
+
+/// <summary>Same refresh flow but with a 1 second grace window, so tests can step outside it.</summary>
+public sealed class ShortGraceFactory : IdentityFactory
+{
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+        builder.UseSetting("Auth:RefreshGraceSeconds", "1");
+    }
+}
+
+public sealed class CapturingEmailTransport : IEmailTransport
 {
     private readonly ConcurrentDictionary<string, string> _codes = new();
     private readonly ConcurrentDictionary<string, int> _codeCounts = new();
     private readonly ConcurrentDictionary<string, string> _resetTokens = new();
 
+    /// <summary>When set, sending throws (to exercise the outbox retry path).</summary>
+    public Exception? FailWith { get; set; }
+
     public Task SendVerificationCodeAsync(string to, string code, CancellationToken ct = default)
     {
+        if (FailWith is not null) throw FailWith;
         _codes[to] = code;
         _codeCounts.AddOrUpdate(to, 1, (_, n) => n + 1);
         return Task.CompletedTask;
     }
 
-    public int CodesSentTo(string email) => _codeCounts.GetValueOrDefault(email.ToLowerInvariant());
-
     public Task SendPasswordResetAsync(string to, string token, string? link, CancellationToken ct = default)
     {
+        if (FailWith is not null) throw FailWith;
         _resetTokens[to] = token;
         return Task.CompletedTask;
     }
@@ -119,6 +179,8 @@ public sealed class CapturingEmailSender : IEmailSender
     public string LastCodeFor(string email) => _codes[email.ToLowerInvariant()];
 
     public string? LastResetTokenFor(string email) => _resetTokens.GetValueOrDefault(email.ToLowerInvariant());
+
+    public int CodesSentTo(string email) => _codeCounts.GetValueOrDefault(email.ToLowerInvariant());
 }
 
 /// <summary>Same semantics as RedisLoginThrottle, in memory.</summary>
@@ -131,14 +193,13 @@ public sealed class InMemoryLoginThrottle(IOptions<AuthOptions> options) : ILogi
     public Task<TimeSpan?> GetLockoutAsync(string email, CancellationToken ct = default) =>
         Task.FromResult<TimeSpan?>(_locks.TryGetValue(email, out var until) && until > DateTime.UtcNow ? until - DateTime.UtcNow : null);
 
-    public Task RegisterFailureAsync(string email, CancellationToken ct = default)
+    public Task<bool> RegisterFailureAsync(string email, CancellationToken ct = default)
     {
-        if (_failures.AddOrUpdate(email, 1, (_, n) => n + 1) >= _opt.LoginMaxFailures)
-        {
-            _locks[email] = DateTime.UtcNow.AddMinutes(_opt.LoginLockoutMinutes);
-            _failures.TryRemove(email, out _);
-        }
-        return Task.CompletedTask;
+        if (_failures.AddOrUpdate(email, 1, (_, n) => n + 1) < _opt.LoginMaxFailures) return Task.FromResult(false);
+
+        _locks[email] = DateTime.UtcNow.AddMinutes(_opt.LoginLockoutMinutes);
+        _failures.TryRemove(email, out _);
+        return Task.FromResult(true);
     }
 
     public Task ResetAsync(string email, CancellationToken ct = default)
@@ -146,16 +207,6 @@ public sealed class InMemoryLoginThrottle(IOptions<AuthOptions> options) : ILogi
         _failures.TryRemove(email, out _);
         _locks.TryRemove(email, out _);
         return Task.CompletedTask;
-    }
-}
-
-/// <summary>Same refresh flow but with a 1 second grace window, so tests can step outside it.</summary>
-public sealed class ShortGraceFactory : IdentityFactory
-{
-    protected override void ConfigureWebHost(IWebHostBuilder builder)
-    {
-        base.ConfigureWebHost(builder);
-        builder.UseSetting("Auth:RefreshGraceSeconds", "1");
     }
 }
 

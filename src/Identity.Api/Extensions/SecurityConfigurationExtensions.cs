@@ -7,11 +7,9 @@ namespace Identity.Api.Extensions;
 
 public static class SecurityConfigurationExtensions
 {
-    private static readonly string[] DevSecretMarkers = ["dev-only", "change-me", "changeme", "secret-secret"];
-
     /// <summary>
     /// Refuses to start outside Development/Testing with settings that are only acceptable locally:
-    /// a placeholder JWT secret, no SMTP (codes would end up in the logs) or a weak seeded admin password.
+    /// no configured signing key, no SMTP (codes would end up in the logs) or a weak seeded admin password.
     /// </summary>
     public static void ValidateSecurityConfiguration(this IConfiguration config, IHostEnvironment env)
     {
@@ -19,9 +17,11 @@ public static class SecurityConfigurationExtensions
 
         var errors = new List<string>();
 
-        var secret = config["Jwt:Secret"] ?? "";
-        if (DevSecretMarkers.Any(m => secret.Contains(m, StringComparison.OrdinalIgnoreCase)))
-            errors.Add("Jwt:Secret looks like a development placeholder; generate a random one (e.g. `openssl rand -base64 48`).");
+        var hasSigningKey = config.GetSection("Jwt:SigningKeys").GetChildren()
+            .Any(k => !string.IsNullOrWhiteSpace(k["PrivateKeyPem"]) || !string.IsNullOrWhiteSpace(k["PrivateKeyPath"]));
+        if (!hasSigningKey)
+            errors.Add("Jwt:SigningKeys is empty; provide an RSA private key (PEM) via Jwt__SigningKeys__0__PrivateKeyPath "
+                       + "(e.g. `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out jwt.pem`).");
 
         if (string.IsNullOrWhiteSpace(config["Smtp:Host"]))
             errors.Add("Smtp:Host is empty; verification codes and reset tokens would only be written to the logs.");

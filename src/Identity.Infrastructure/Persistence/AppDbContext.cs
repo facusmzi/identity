@@ -1,8 +1,11 @@
 using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using Identity.Application.Abstractions.Persistence;
+using Identity.Application.Common;
 using Identity.Domain.Common;
 using Identity.Domain.Entities;
+using Identity.Infrastructure.Messaging;
 
 namespace Identity.Infrastructure.Persistence;
 
@@ -12,6 +15,32 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<Session> Sessions => Set<Session>();
     public DbSet<Role> Roles => Set<Role>();
     public DbSet<UserRole> UserRoles => Set<UserRole>();
+    public DbSet<AuditEntry> AuditEntries => Set<AuditEntry>();
+    public DbSet<OutboxEmail> OutboxEmails => Set<OutboxEmail>();
+
+    public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken ct = default)
+    {
+        try
+        {
+            return await base.SaveChangesAsync(acceptAllChangesOnSuccess, ct);
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            throw new UniqueConstraintViolationException(ex);
+        }
+    }
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        try
+        {
+            return base.SaveChanges(acceptAllChangesOnSuccess);
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            throw new UniqueConstraintViolationException(ex);
+        }
+    }
 
     public Task ExecuteInTransactionAsync(Func<CancellationToken, Task> action, CancellationToken ct = default) =>
         // Going through the execution strategy keeps this compatible with retrying strategies (EnableRetryOnFailure).
@@ -42,4 +71,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             modelBuilder.Entity(entityType.ClrType).HasQueryFilter(Expression.Lambda(body, param));
         }
     }
+
+    // SQLite is only used by the test suite; matching on the type name avoids a package reference here.
+    private static bool IsUniqueViolation(DbUpdateException ex) => ex.InnerException switch
+    {
+        PostgresException pg => pg.SqlState == PostgresErrorCodes.UniqueViolation,
+        { } inner => inner.GetType().Name == "SqliteException" && inner.Message.Contains("UNIQUE constraint failed"),
+        _ => false,
+    };
 }

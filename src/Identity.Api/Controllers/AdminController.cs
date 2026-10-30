@@ -32,11 +32,11 @@ public sealed class AdminController(AdminService admin) : ControllerBase
 
     [HttpPost("users/{id:guid}/restore")]
     public async Task<ActionResult<AdminUserResponse>> RestoreUser(Guid id, CancellationToken ct) =>
-        await admin.RestoreUserAsync(id, ct);
+        await admin.RestoreUserAsync(User.GetUserId(), id, ct);
 
     [HttpPost("users/{id:guid}/roles")]
     public async Task<ActionResult<AdminUserResponse>> AssignRole(Guid id, AssignRoleRequest req, CancellationToken ct) =>
-        await admin.AssignRoleAsync(id, req, ct);
+        await admin.AssignRoleAsync(User.GetUserId(), id, req, ct);
 
     [HttpDelete("users/{id:guid}/roles/{role}")]
     public async Task<ActionResult<AdminUserResponse>> RemoveRole(Guid id, string role, CancellationToken ct) =>
@@ -45,4 +45,11 @@ public sealed class AdminController(AdminService admin) : ControllerBase
     [HttpGet("roles")]
     public async Task<ActionResult<IReadOnlyList<RoleResponse>>> ListRoles(CancellationToken ct) =>
         Ok(await admin.ListRolesAsync(ct));
+
+    /// <summary>Security and admin events, newest first. <paramref name="userId"/> matches actor or target.</summary>
+    [HttpGet("audit")]
+    public async Task<ActionResult<PagedResult<AuditEntryResponse>>> ListAudit(
+        [FromQuery] Guid? userId, [FromQuery] string? action,
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default) =>
+        await admin.ListAuditAsync(userId, action, page, pageSize, ct);
 }

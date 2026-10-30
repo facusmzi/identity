@@ -12,7 +12,7 @@ public sealed class SecurityConfigurationTests
 {
     private static readonly Dictionary<string, string?> SafeProduction = new()
     {
-        ["Jwt:Secret"] = "q8J3v0YkzP5mH1sW2xR7tN4bC6dF9gL0aE3uI8oK",
+        ["Jwt:SigningKeys:0:PrivateKeyPath"] = "/run/secrets/jwt.pem",
         ["Smtp:Host"] = "smtp.example.com",
         ["Seed:AdminPassword"] = "",
     };
@@ -25,20 +25,33 @@ public sealed class SecurityConfigurationTests
     public void Safe_production_config_starts() => Validate(SafeProduction);
 
     [Theory]
-    [InlineData("Jwt:Secret", "dev-only-secret-change-me-0123456789abcdef")]
-    [InlineData("Smtp:Host", "")]
-    [InlineData("Seed:AdminPassword", "Admin12345")]
-    [InlineData("Seed:AdminPassword", "short1A")]
-    public void Unsafe_production_config_refuses_to_start(string key, string value)
+    [InlineData("Jwt:SigningKeys:0:PrivateKeyPath", "", "Jwt:SigningKeys")]
+    [InlineData("Smtp:Host", "", "Smtp:Host")]
+    [InlineData("Seed:AdminPassword", "Admin12345", "Seed:AdminPassword")]
+    [InlineData("Seed:AdminPassword", "short1A", "Seed:AdminPassword")]
+    public void Unsafe_production_config_refuses_to_start(string key, string value, string expectedInMessage)
     {
         var config = new Dictionary<string, string?>(SafeProduction) { [key] = value };
         var ex = Assert.Throws<InvalidOperationException>(() => Validate(config));
-        Assert.Contains(key, ex.Message);
+        Assert.Contains(expectedInMessage, ex.Message);
     }
 
     [Fact]
     public void Development_allows_local_defaults() =>
-        Validate(new() { ["Jwt:Secret"] = "dev-only-secret-change-me-0123456789abcdef", ["Seed:AdminPassword"] = "Admin12345" }, "Development");
+        Validate(new() { ["Seed:AdminPassword"] = "Admin12345" }, "Development");
+
+    [Fact]
+    public void Signing_key_is_required_outside_development() =>
+        Assert.Throws<InvalidOperationException>(() =>
+            new SigningKeyProvider(Options.Create(new JwtOptions()), new TestEnvironment("Production")));
+
+    [Fact]
+    public void Weak_signing_key_is_rejected()
+    {
+        var weakPem = System.Security.Cryptography.RSA.Create(1024).ExportPkcs8PrivateKeyPem();
+        var options = Options.Create(new JwtOptions { SigningKeys = [new SigningKeyOptions { PrivateKeyPem = weakPem }] });
+        Assert.Throws<InvalidOperationException>(() => new SigningKeyProvider(options, new TestEnvironment("Production")));
+    }
 
     [Fact]
     public async Task Hasher_returns_503_instead_of_queueing_forever()

@@ -2,8 +2,17 @@ using Identity.Domain.Entities;
 
 namespace Identity.Application.Abstractions.Persistence;
 
-public interface ISessionRepository : IRepository<Session>
+/// <summary>
+/// Sessions are read without change tracking and only ever mutated through the atomic bulk methods below
+/// (never through tracked entities + SaveChanges). Mixing both is how stale in-memory copies overwrite a
+/// concurrent revocation, so the repository does not offer the tracked path at all.
+/// </summary>
+public interface ISessionRepository
 {
+    Task AddAsync(Session session, CancellationToken ct = default);
+
+    Task<Session?> GetByIdAsync(Guid sessionId, CancellationToken ct = default);
+
     /// <summary>Session with its user loaded (null if the session or the user is deleted).</summary>
     Task<Session?> GetWithUserAsync(Guid sessionId, CancellationToken ct = default);
 
@@ -23,4 +32,7 @@ public interface ISessionRepository : IRepository<Session>
     Task<int> RevokeAsync(Guid sessionId, DateTime now, CancellationToken ct = default);
 
     Task<int> RevokeAllForUserAsync(Guid userId, DateTime now, Guid? exceptSessionId = null, CancellationToken ct = default);
+
+    /// <summary>Physically deletes sessions that expired or were revoked before <paramref name="before"/>.</summary>
+    Task<int> PurgeEndedAsync(DateTime before, CancellationToken ct = default);
 }

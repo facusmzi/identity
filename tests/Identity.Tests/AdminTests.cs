@@ -18,6 +18,58 @@ public sealed class AdminTests(IdentityFactory factory) : IClassFixture<Identity
     }
 
     [Fact]
+    public async Task Admins_must_be_demoted_before_deletion_and_everything_is_audited()
+    {
+        var admin = await AdminClientAsync();
+        var adminId = (await admin.GetFromJsonAsync<UserResponse>("/auth/me"))!.Id;
+        var (target, _) = await factory.CreateVerifiedUserAsync(NewEmail());
+        var targetId = (await target.GetFromJsonAsync<UserResponse>("/auth/me"))!.Id;
+
+        await admin.PostAsJsonAsync($"/admin/users/{targetId}/roles", new { role = "Admin" });
+
+        var blocked = await admin.DeleteAsync($"/admin/users/{targetId}");
+        Assert.Equal(HttpStatusCode.BadRequest, blocked.StatusCode);
+        Assert.Contains("TARGET_IS_ADMIN", await blocked.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, (await admin.DeleteAsync($"/admin/users/{targetId}/roles/Admin")).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.DeleteAsync($"/admin/users/{targetId}")).StatusCode);
+
+        var audit = await admin.GetFromJsonAsync<PagedResult<AuditEntryResponse>>($"/admin/audit?userId={targetId}&pageSize=100");
+        var adminActions = audit!.Items.Where(e => e.Action.StartsWith("admin.")).ToList();
+        Assert.Equal(["admin.user_deleted", "admin.role_removed", "admin.role_assigned"], adminActions.Select(e => e.Action));
+        Assert.All(adminActions, e => Assert.Equal(adminId, e.ActorUserId));
+        Assert.Contains(audit.Items, e => e.Action == "login.succeeded" && e.TargetUserId == targetId);
+    }
+
+    [Fact]
+    public async Task Failed_logins_are_audited_without_secrets()
+    {
+        var email = NewEmail();
+        var (user, _) = await factory.CreateVerifiedUserAsync(email);
+        var userId = (await user.GetFromJsonAsync<UserResponse>("/auth/me"))!.Id;
+        await factory.CreateClient().PostAsJsonAsync("/auth/login", new { email, password = "Wrong123x" });
+
+        var admin = await AdminClientAsync();
+        var audit = await admin.GetFromJsonAsync<PagedResult<AuditEntryResponse>>($"/admin/audit?userId={userId}&action=login.failed");
+        var entry = Assert.Single(audit!.Items);
+        Assert.Null(entry.ActorUserId);
+        Assert.DoesNotContain("Wrong123x", entry.Details ?? "");
+    }
+
+    [Fact]
+    public async Task The_last_admin_cannot_delete_their_own_account()
+    {
+        using var isolated = new IdentityFactory(); // own database: exactly one admin
+        var admin = isolated.CreateClient();
+        await IdentityFactory.LoginAsync(admin, IdentityFactory.AdminEmail, IdentityFactory.AdminPassword);
+
+        var req = new HttpRequestMessage(HttpMethod.Delete, "/auth/me") { Content = JsonContent.Create(new { password = IdentityFactory.AdminPassword }) };
+        var res = await admin.SendAsync(req);
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Contains("LAST_ADMIN", await res.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task Regular_user_cannot_access_admin()
     {
         var (client, _) = await factory.CreateVerifiedUserAsync(NewEmail());

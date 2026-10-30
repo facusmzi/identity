@@ -9,7 +9,8 @@ public interface ILoginThrottle
     /// <summary>Remaining lockout time, or null if the account may try to log in.</summary>
     Task<TimeSpan?> GetLockoutAsync(string email, CancellationToken ct = default);
 
-    Task RegisterFailureAsync(string email, CancellationToken ct = default);
+    /// <returns>True when this failure just locked the account.</returns>
+    Task<bool> RegisterFailureAsync(string email, CancellationToken ct = default);
 
     Task ResetAsync(string email, CancellationToken ct = default);
 }

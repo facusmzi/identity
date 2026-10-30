@@ -19,18 +19,18 @@ public sealed class RedisLoginThrottle(IConnectionMultiplexer redis, IOptions<Au
     public async Task<TimeSpan?> GetLockoutAsync(string email, CancellationToken ct = default) =>
         await redis.GetDatabase().KeyTimeToLiveAsync(LockKey(email));
 
-    public async Task RegisterFailureAsync(string email, CancellationToken ct = default)
+    public async Task<bool> RegisterFailureAsync(string email, CancellationToken ct = default)
     {
         var db = redis.GetDatabase();
         var failures = await db.StringIncrementAsync(FailuresKey(email));
         if (failures == 1)
             await db.KeyExpireAsync(FailuresKey(email), TimeSpan.FromMinutes(_opt.LoginFailureWindowMinutes));
 
-        if (failures >= _opt.LoginMaxFailures)
-        {
-            await db.StringSetAsync(LockKey(email), "1", TimeSpan.FromMinutes(_opt.LoginLockoutMinutes));
-            await db.KeyDeleteAsync(FailuresKey(email));
-        }
+        if (failures < _opt.LoginMaxFailures) return false;
+
+        await db.StringSetAsync(LockKey(email), "1", TimeSpan.FromMinutes(_opt.LoginLockoutMinutes));
+        await db.KeyDeleteAsync(FailuresKey(email));
+        return true;
     }
 
     public Task ResetAsync(string email, CancellationToken ct = default) =>

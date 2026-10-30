@@ -5,19 +5,24 @@ using Identity.Domain.Entities;
 
 namespace Identity.Application.Services;
 
+/// <summary>
+/// Every action is written to the audit log in the same transaction as the change. Admin accounts are
+/// protected: an admin must be demoted before being deleted, and the last admin can never be demoted or deleted.
+/// </summary>
 public sealed class AdminService(
     IUserRepository users,
     IRoleRepository roles,
     ISessionRepository sessions,
+    IAuditLogRepository auditLog,
     IUnitOfWork uow,
+    AuditTrail audit,
     TimeProvider clock)
 {
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
 
     public async Task<PagedResult<AdminUserResponse>> ListUsersAsync(int page, int pageSize, bool includeDeleted, CancellationToken ct = default)
     {
-        page = Math.Max(page, 1);
-        pageSize = Math.Clamp(pageSize, 1, 100);
+        (page, pageSize) = Paging(page, pageSize);
         var result = await users.ListAsync(page, pageSize, includeDeleted, ct);
         return result.Map(u => u.ToAdminResponse());
     }
@@ -29,7 +34,15 @@ public sealed class AdminService(
     public async Task<IReadOnlyList<RoleResponse>> ListRolesAsync(CancellationToken ct = default) =>
         (await roles.ListAsync(ct)).Select(r => r.ToResponse()).ToList();
 
-    public async Task<AdminUserResponse> AssignRoleAsync(Guid userId, AssignRoleRequest req, CancellationToken ct = default)
+    public async Task<PagedResult<AuditEntryResponse>> ListAuditAsync(
+        Guid? userId, string? action, int page, int pageSize, CancellationToken ct = default)
+    {
+        (page, pageSize) = Paging(page, pageSize);
+        var result = await auditLog.ListAsync(userId, action, page, pageSize, ct);
+        return result.Map(e => e.ToResponse());
+    }
+
+    public async Task<AdminUserResponse> AssignRoleAsync(Guid actingUserId, Guid userId, AssignRoleRequest req, CancellationToken ct = default)
     {
         var user = await users.GetWithRolesAsync(userId, ct: ct) ?? throw new NotFoundException("User not found");
         var role = await roles.GetByNameAsync(req.Role, ct) ?? throw new NotFoundException($"Role '{req.Role}' not found");
@@ -37,6 +50,7 @@ public sealed class AdminService(
         if (user.UserRoles.All(ur => ur.RoleId != role.Id))
         {
             user.UserRoles.Add(new UserRole { UserId = user.Id, Role = role });
+            audit.Record(AuditActions.AdminRoleAssigned, actingUserId, userId, new { role = role.Name });
             await uow.SaveChangesAsync(ct);
         }
         return user.ToAdminResponse();
@@ -48,11 +62,16 @@ public sealed class AdminService(
         var link = user.UserRoles.FirstOrDefault(ur => string.Equals(ur.Role.Name, roleName, StringComparison.OrdinalIgnoreCase))
             ?? throw new NotFoundException($"User does not have role '{roleName}'");
 
-        if (link.Role.Name == Role.Admin && userId == actingUserId)
-            throw new BadRequestException("You cannot remove your own Admin role", "SELF_DEMOTION");
+        if (link.Role.Name == Role.Admin)
+        {
+            if (userId == actingUserId)
+                throw new BadRequestException("You cannot remove your own Admin role", "SELF_DEMOTION");
+            await EnsureNotLastAdminAsync(userId, ct);
+        }
 
         // The repository turns this removal into a logical delete of the user_roles row.
         user.UserRoles.Remove(link);
+        audit.Record(AuditActions.AdminRoleRemoved, actingUserId, userId, new { role = link.Role.Name });
         await uow.SaveChangesAsync(ct);
         return user.ToAdminResponse();
     }
@@ -61,7 +80,11 @@ public sealed class AdminService(
     {
         if (userId == actingUserId) throw new BadRequestException("Use DELETE /auth/me to delete your own account");
 
-        var user = await users.GetByIdAsync(userId, ct) ?? throw new NotFoundException("User not found");
+        var user = await users.GetWithRolesAsync(userId, ct: ct) ?? throw new NotFoundException("User not found");
+        if (user.RoleNames().Contains(Role.Admin))
+            throw new BadRequestException("Remove the Admin role before deleting an admin", "TARGET_IS_ADMIN");
+
+        audit.Record(AuditActions.AdminUserDeleted, actingUserId, userId);
         await uow.ExecuteInTransactionAsync(async t =>
         {
             await sessions.RevokeAllForUserAsync(userId, Now, ct: t);
@@ -70,7 +93,7 @@ public sealed class AdminService(
         }, ct);
     }
 
-    public async Task<AdminUserResponse> RestoreUserAsync(Guid userId, CancellationToken ct = default)
+    public async Task<AdminUserResponse> RestoreUserAsync(Guid actingUserId, Guid userId, CancellationToken ct = default)
     {
         var user = await users.GetWithRolesAsync(userId, includeDeleted: true, ct) ?? throw new NotFoundException("User not found");
         if (!user.IsDeleted) return user.ToAdminResponse();
@@ -79,7 +102,16 @@ public sealed class AdminService(
             throw new ConflictException("Another active user already uses this email", "EMAIL_TAKEN");
 
         users.Restore(user);
+        audit.Record(AuditActions.AdminUserRestored, actingUserId, userId);
         await uow.SaveChangesAsync(ct);
         return user.ToAdminResponse();
     }
+
+    private async Task EnsureNotLastAdminAsync(Guid userId, CancellationToken ct)
+    {
+        if (!await users.AnyOtherInRoleAsync(Role.Admin, userId, ct))
+            throw new BadRequestException("This is the last admin", "LAST_ADMIN");
+    }
+
+    private static (int Page, int PageSize) Paging(int page, int pageSize) => (Math.Max(page, 1), Math.Clamp(pageSize, 1, 100));
 }

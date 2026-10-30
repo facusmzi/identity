@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Identity.Domain.Entities;
+using Identity.Infrastructure.Messaging;
 
 namespace Identity.Infrastructure.Persistence.Configurations;
 
@@ -64,5 +65,35 @@ internal sealed class UserRoleConfiguration : IEntityTypeConfiguration<UserRole>
         b.HasOne(ur => ur.User).WithMany(u => u.UserRoles).HasForeignKey(ur => ur.UserId).OnDelete(DeleteBehavior.Cascade);
         b.HasOne(ur => ur.Role).WithMany(r => r.UserRoles).HasForeignKey(ur => ur.RoleId).OnDelete(DeleteBehavior.Cascade);
         b.Ignore(ur => ur.IsDeleted);
+    }
+}
+
+internal sealed class AuditEntryConfiguration : IEntityTypeConfiguration<AuditEntry>
+{
+    public void Configure(EntityTypeBuilder<AuditEntry> b)
+    {
+        b.ToTable("audit_log");
+        b.Property(e => e.Id).ValueGeneratedNever();
+        b.Property(e => e.Action).HasMaxLength(64).IsRequired();
+        b.Property(e => e.IpAddress).HasMaxLength(64);
+        b.Property(e => e.Details).HasMaxLength(2000);
+        b.HasIndex(e => e.OccurredAt);
+        b.HasIndex(e => new { e.TargetUserId, e.OccurredAt });
+        b.HasIndex(e => new { e.Action, e.OccurredAt });
+        // No FKs to users on purpose: the log must outlive (and not block purging of) the rows it mentions.
+    }
+}
+
+internal sealed class OutboxEmailConfiguration : IEntityTypeConfiguration<OutboxEmail>
+{
+    public void Configure(EntityTypeBuilder<OutboxEmail> b)
+    {
+        b.ToTable("outbox_emails");
+        b.Property(m => m.Id).ValueGeneratedNever();
+        b.Property(m => m.Kind).HasMaxLength(32).IsRequired();
+        b.Property(m => m.To).HasMaxLength(254).IsRequired();
+        b.Property(m => m.Payload).HasMaxLength(4000);
+        b.Property(m => m.LastError).HasMaxLength(1000);
+        b.HasIndex(m => new { m.SentAt, m.FailedAt, m.NextAttemptAt });
     }
 }

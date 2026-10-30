@@ -14,6 +14,7 @@ public static class DependencyInjection
         services.AddScoped<AuthService>();
         services.AddScoped<SessionService>();
         services.AddScoped<AdminService>();
+        services.AddScoped<AuditTrail>();
         return services;
     }
 }

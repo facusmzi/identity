@@ -15,6 +15,9 @@ internal static class Mappings
 
     public static RoleResponse ToResponse(this Role role) => new(role.Id, role.Name, role.Description);
 
+    public static AuditEntryResponse ToResponse(this AuditEntry e) =>
+        new(e.Id, e.OccurredAt, e.Action, e.ActorUserId, e.TargetUserId, e.IpAddress, e.Details);
+
     public static SessionResponse ToResponse(this Session s, Guid currentSessionId) =>
         new(s.Id, s.IpAddress, s.UserAgent, s.LoginMethod.ToString().ToLowerInvariant(), s.ExpiresAt, s.CreatedAt, s.Id == currentSessionId);
 }

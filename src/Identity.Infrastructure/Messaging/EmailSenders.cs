@@ -4,7 +4,6 @@ using MailKit.Security;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using MimeKit;
-using Identity.Application.Abstractions.Messaging;
 
 namespace Identity.Infrastructure.Messaging;
 
@@ -21,7 +20,7 @@ public sealed class SmtpOptions
     public string From { get; set; } = "Identity <no-reply@identity.local>";
 }
 
-public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailSender
+public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailTransport
 {
     private readonly SmtpOptions _opt = options.Value;
 
@@ -65,7 +64,7 @@ public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailSende
     }
 }
 
-public sealed class LoggingEmailSender(ILogger<LoggingEmailSender> logger) : IEmailSender
+public sealed class LoggingEmailSender(ILogger<LoggingEmailSender> logger) : IEmailTransport
 {
     public Task SendVerificationCodeAsync(string to, string code, CancellationToken ct = default)
     {

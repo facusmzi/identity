@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using Identity.Application.Services;
@@ -11,23 +12,22 @@ public static class AuthenticationExtensions
 {
     public const string RoleClaim = "role";
 
-    public static IServiceCollection AddJwtAuthentication(this IServiceCollection services, IConfiguration config)
+    public static IServiceCollection AddJwtAuthentication(this IServiceCollection services)
     {
-        var jwt = config.GetSection(JwtOptions.Section).Get<JwtOptions>() ?? new JwtOptions();
-        if (jwt.Secret.Length < 32)
-            throw new InvalidOperationException("Jwt:Secret must be at least 32 characters long.");
+        services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
 
-        services
-            .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-            .AddJwtBearer(options =>
+        // Configured from DI so it uses the same keys that sign the tokens (and that the JWKS publishes).
+        services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
+            .Configure<SigningKeyProvider, IOptions<JwtOptions>>((options, keys, jwtOptions) =>
             {
+                var jwt = jwtOptions.Value;
                 options.MapInboundClaims = false;
                 options.TokenValidationParameters = new TokenValidationParameters
                 {
                     ValidIssuer = jwt.Issuer,
                     ValidAudience = jwt.Audience,
-                    IssuerSigningKey = jwt.SigningKey(),
-                    ValidAlgorithms = [SecurityAlgorithms.HmacSha256],
+                    IssuerSigningKeys = keys.Keys,
+                    ValidAlgorithms = [SecurityAlgorithms.RsaSha256],
                     ClockSkew = TimeSpan.FromSeconds(30),
                     NameClaimType = JwtRegisteredClaimNames.Sub,
                     RoleClaimType = RoleClaim,

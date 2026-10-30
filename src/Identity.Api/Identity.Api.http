@@ -81,3 +81,13 @@ Content-Type: application/json
 ### Admin: list users (incluye borrados)
 GET {{base}}/admin/users?page=1&pageSize=20&includeDeleted=true
 Authorization: Bearer {{accessToken}}
+
+### Admin: auditoría (filtrable por userId y action)
+GET {{base}}/admin/audit?pageSize=50
+Authorization: Bearer {{accessToken}}
+
+### JWKS (claves públicas para otros servicios)
+GET {{base}}/.well-known/jwks.json
+
+### Health
+GET {{base}}/health/ready

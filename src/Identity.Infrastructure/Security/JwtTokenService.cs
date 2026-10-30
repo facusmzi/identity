@@ -12,18 +12,34 @@ public sealed class JwtOptions
 {
     public const string Section = "Jwt";
 
-    public string Secret { get; set; } = "";
+    /// <summary>In production use the public base URL, so other services can discover the JWKS from it.</summary>
     public string Issuer { get; set; } = "identity";
     public string Audience { get; set; } = "identity";
     public int AccessTokenMinutes { get; set; } = 15;
 
-    public SymmetricSecurityKey SigningKey() => new(Encoding.UTF8.GetBytes(Secret));
+    /// <summary>
+    /// RSA private keys (PEM, 2048+ bits). The first one signs new tokens; all of them are published in the
+    /// JWKS and accepted for validation, which is how keys are rotated without logging everyone out.
+    /// </summary>
+    public List<SigningKeyOptions> SigningKeys { get; set; } = [];
+
+    /// <summary>Development only: where the auto-generated key is kept (relative to the content root).</summary>
+    public string DevKeyPath { get; set; } = ".keys/dev-signing-key.pem";
 }
 
-public sealed class JwtTokenService(IOptions<JwtOptions> options, TimeProvider clock) : ITokenService
+public sealed class SigningKeyOptions
+{
+    public string? KeyId { get; set; }
+    public string? PrivateKeyPem { get; set; }
+    public string? PrivateKeyPath { get; set; }
+}
+
+/// <summary>RS256 access tokens signed with the active key from <see cref="SigningKeyProvider"/>.</summary>
+public sealed class JwtTokenService(IOptions<JwtOptions> options, SigningKeyProvider keys, TimeProvider clock) : ITokenService
 {
     private readonly JwtOptions _opt = options.Value;
     private readonly JsonWebTokenHandler _handler = new();
+    private readonly SigningCredentials _credentials = new(keys.Active, SecurityAlgorithms.RsaSha256);
 
     public (string Token, DateTime ExpiresAt) CreateAccessToken(Guid userId, Guid sessionId, string email)
     {
@@ -45,7 +61,7 @@ public sealed class JwtTokenService(IOptions<JwtOptions> options, TimeProvider c
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
                 new Claim("typ", "access"),
             ]),
-            SigningCredentials = new SigningCredentials(_opt.SigningKey(), SecurityAlgorithms.HmacSha256),
+            SigningCredentials = _credentials,
         });
 
         return (token, expires);

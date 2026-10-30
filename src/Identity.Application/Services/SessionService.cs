@@ -4,7 +4,7 @@ using Identity.Application.Dtos;
 
 namespace Identity.Application.Services;
 
-public sealed class SessionService(ISessionRepository sessions, IUnitOfWork uow, TimeProvider clock)
+public sealed class SessionService(ISessionRepository sessions, TimeProvider clock)
 {
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
 
@@ -21,8 +21,7 @@ public sealed class SessionService(ISessionRepository sessions, IUnitOfWork uow,
         if (session is null || session.RevokedAt is not null) throw new NotFoundException("Session not found");
         if (session.UserId != userId) throw new ForbiddenException("Forbidden");
 
-        session.RevokedAt = Now;
-        await uow.SaveChangesAsync(ct);
+        await sessions.RevokeAsync(sessionId, Now, ct);
         return session.Id == currentSessionId;
     }
 

@@ -4,8 +4,16 @@ using Identity.Domain.Entities;
 
 namespace Identity.Infrastructure.Persistence.Repositories;
 
-public sealed class SessionRepository(AppDbContext db) : Repository<Session>(db), ISessionRepository
+/// <summary>Reads are untracked; every mutation is a single atomic UPDATE (see ISessionRepository).</summary>
+public sealed class SessionRepository(AppDbContext db) : ISessionRepository
 {
+    private DbSet<Session> Set => db.Sessions;
+
+    public async Task AddAsync(Session session, CancellationToken ct = default) => await Set.AddAsync(session, ct);
+
+    public Task<Session?> GetByIdAsync(Guid sessionId, CancellationToken ct = default) =>
+        Set.AsNoTracking().FirstOrDefaultAsync(s => s.Id == sessionId, ct);
+
     public Task<Session?> GetWithUserAsync(Guid sessionId, CancellationToken ct = default) =>
         Set.AsNoTracking().Include(s => s.User).FirstOrDefaultAsync(s => s.Id == sessionId, ct);
 
@@ -48,4 +56,10 @@ public sealed class SessionRepository(AppDbContext db) : Repository<Session>(db)
             .ExecuteUpdateAsync(u => u
                 .SetProperty(s => s.RevokedAt, now)
                 .SetProperty(s => s.UpdatedAt, now), ct);
+
+    // Retention purge: the one sanctioned hard delete. Ended sessions carry no value after the retention period.
+    public Task<int> PurgeEndedAsync(DateTime before, CancellationToken ct = default) =>
+        Set.IgnoreQueryFilters()
+            .Where(s => s.ExpiresAt < before || s.RevokedAt < before || s.DeletedAt < before)
+            .ExecuteDeleteAsync(ct);
 }

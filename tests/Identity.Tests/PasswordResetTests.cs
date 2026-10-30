@@ -14,7 +14,7 @@ public sealed class PasswordResetTests(IdentityFactory factory) : IClassFixture<
         var res = await factory.CreateClient().PostAsJsonAsync("/auth/forgot-password", new { email });
 
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
-        Assert.Null(factory.Emails.LastResetTokenFor(email));
+        Assert.Null(await factory.LastResetTokenAsync(email));
     }
 
     [Fact]
@@ -25,7 +25,7 @@ public sealed class PasswordResetTests(IdentityFactory factory) : IClassFixture<
         var anon = factory.CreateClient();
 
         Assert.Equal(HttpStatusCode.OK, (await anon.PostAsJsonAsync("/auth/forgot-password", new { email })).StatusCode);
-        var token = factory.Emails.LastResetTokenFor(email)!;
+        var token = (await factory.LastResetTokenAsync(email))!;
 
         var wrong = await anon.PostAsJsonAsync("/auth/reset-password", new { email, token = token + "x", newPassword = "Reset123x" });
         Assert.Equal(HttpStatusCode.BadRequest, wrong.StatusCode);
@@ -51,7 +51,7 @@ public sealed class PasswordResetTests(IdentityFactory factory) : IClassFixture<
         await client.PostAsJsonAsync("/auth/register", new { email, password = "Squatter1x" });
 
         await client.PostAsJsonAsync("/auth/forgot-password", new { email });
-        var token = factory.Emails.LastResetTokenFor(email)!;
+        var token = (await factory.LastResetTokenAsync(email))!;
         await client.PostAsJsonAsync("/auth/reset-password", new { email, token, newPassword = "Owner123x" });
 
         await IdentityFactory.LoginAsync(client, email, "Owner123x");

@@ -25,7 +25,7 @@ public sealed class AuthFlowTests(IdentityFactory factory) : IClassFixture<Ident
         Assert.Contains("EMAIL_NOT_VERIFIED", await unverified.Content.ReadAsStringAsync());
 
         var verify = await client.PostAsJsonAsync("/auth/verify-email",
-            new { email, code = factory.Emails.LastCodeFor(email), password = "Passw0rd!" });
+            new { email, code = await factory.LastCodeAsync(email), password = "Passw0rd!" });
         Assert.Equal(HttpStatusCode.OK, verify.StatusCode);
 
         var tokens = await IdentityFactory.LoginAsync(client, email, "Passw0rd!");
@@ -105,7 +105,7 @@ public sealed class AuthFlowTests(IdentityFactory factory) : IClassFixture<Ident
 
         // The victim registers later: their password replaces the attacker's and a new code is sent.
         await victim.PostAsJsonAsync("/auth/register", new { email, password = "Victim123" });
-        var code = factory.Emails.LastCodeFor(email);
+        var code = await factory.LastCodeAsync(email);
 
         // Verifying needs the password chosen at registration, so only the latest registrant can do it.
         var withAttackerPassword = await victim.PostAsJsonAsync("/auth/verify-email", new { email, code, password = "Attack3r!" });
@@ -131,7 +131,7 @@ public sealed class AuthFlowTests(IdentityFactory factory) : IClassFixture<Ident
         var email = NewEmail();
         var client = factory.CreateClient();
         await client.PostAsJsonAsync("/auth/register", new { email, password = "Passw0rd!" });
-        var code = factory.Emails.LastCodeFor(email);
+        var code = await factory.LastCodeAsync(email);
         var wrong = code == "000000" ? "111111" : "000000";
 
         for (var i = 0; i < 10; i++)
@@ -144,7 +144,7 @@ public sealed class AuthFlowTests(IdentityFactory factory) : IClassFixture<Ident
         // Asking for a new code does not reset the counter, so resending cannot be used to brute-force it.
         await client.PostAsJsonAsync("/auth/resend-verification", new { email });
         var stillLocked = await client.PostAsJsonAsync("/auth/verify-email",
-            new { email, code = factory.Emails.LastCodeFor(email), password = "Passw0rd!" });
+            new { email, code = await factory.LastCodeAsync(email), password = "Passw0rd!" });
         Assert.Equal(HttpStatusCode.TooManyRequests, stillLocked.StatusCode);
     }
 
@@ -158,7 +158,7 @@ public sealed class AuthFlowTests(IdentityFactory factory) : IClassFixture<Ident
         for (var i = 0; i < 6; i++) // #2..#5 are sent, the rest silently dropped
             Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/auth/resend-verification", new { email })).StatusCode);
 
-        Assert.Equal(5, factory.Emails.CodesSentTo(email));
+        Assert.Equal(5, await factory.CodesSentToAsync(email));
     }
 
     [Fact]

@@ -22,7 +22,8 @@ public sealed class AuthService(
     ITokenService tokens,
     IRefreshGraceStore graceStore,
     ILoginThrottle loginThrottle,
-    IEmailSender emailSender,
+    IEmailOutbox outbox,
+    AuditTrail audit,
     TimeProvider clock,
     IOptions<AuthOptions> options,
     ILogger<AuthService> logger)
@@ -32,8 +33,8 @@ public sealed class AuthService(
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
 
     /// <summary>
-    /// Behaves the same whether or not the email is taken (same response, same Argon2 cost, emails sent in the
-    /// background), so it cannot be used to find out who has an account.
+    /// Behaves the same whether or not the email is taken (same response, same Argon2 cost, emails delivered
+    /// in the background), so it cannot be used to find out who has an account.
     /// Re-registering an unverified account replaces its password: together with verify-email requiring the
     /// password, someone who pre-registers another person's email can never end up owning a verified account.
     /// </summary>
@@ -50,8 +51,8 @@ public sealed class AuthService(
 
             if (TryIssueVerificationCode(existing) is not { } newCode) return;
             existing.PasswordHash = passwordHash;
+            outbox.EnqueueVerificationCode(existing.Email, newCode);
             await uow.SaveChangesAsync(ct);
-            await emailSender.SendVerificationCodeAsync(existing.Email, newCode, ct);
             return;
         }
 
@@ -63,8 +64,16 @@ public sealed class AuthService(
         var code = TryIssueVerificationCode(user)!;
 
         await users.AddAsync(user, ct);
-        await uow.SaveChangesAsync(ct);
-        await emailSender.SendVerificationCodeAsync(user.Email, code, ct);
+        outbox.EnqueueVerificationCode(user.Email, code);
+        try
+        {
+            await uow.SaveChangesAsync(ct);
+        }
+        catch (UniqueConstraintViolationException)
+        {
+            // A concurrent request registered the same email between our read and our insert.
+            // Its registration wins; answer like any other "email already registered" case.
+        }
     }
 
     /// <summary>
@@ -103,6 +112,7 @@ public sealed class AuthService(
 
         pending.EmailVerified = true;
         ClearVerificationCode(pending);
+        audit.Record(AuditActions.EmailVerified, pending.Id, pending.Id);
         await uow.SaveChangesAsync(ct);
     }
 
@@ -113,8 +123,8 @@ public sealed class AuthService(
         if (user is not { EmailVerified: false }) return;
         if (TryIssueVerificationCode(user) is not { } code) return;
 
+        outbox.EnqueueVerificationCode(user.Email, code);
         await uow.SaveChangesAsync(ct);
-        await emailSender.SendVerificationCodeAsync(user.Email, code, ct);
     }
 
     public async Task<AuthTokensResponse> LoginAsync(LoginRequest req, ClientMeta meta, CancellationToken ct = default)
@@ -130,7 +140,10 @@ public sealed class AuthService(
 
         if (!valid)
         {
-            await loginThrottle.RegisterFailureAsync(email, ct);
+            var locked = await loginThrottle.RegisterFailureAsync(email, ct);
+            audit.Record(AuditActions.LoginFailed, null, user?.Id);
+            if (locked) audit.Record(AuditActions.AccountLocked, null, user?.Id);
+            await uow.SaveChangesAsync(ct);
             throw new UnauthorizedException("Invalid credentials", "INVALID_CREDENTIALS");
         }
 
@@ -139,6 +152,7 @@ public sealed class AuthService(
         if (!user!.EmailVerified)
             throw new ForbiddenException("Email not verified", "EMAIL_NOT_VERIFIED");
 
+        audit.Record(AuditActions.LoginSucceeded, user.Id, user.Id);
         return await CreateSessionAsync(user, LoginMethod.Email, meta, ct);
     }
 
@@ -193,6 +207,7 @@ public sealed class AuthService(
 
         user.PasswordHash = await passwordHasher.HashAsync(req.NewPassword, ct);
         ClearPasswordReset(user);
+        audit.Record(AuditActions.PasswordChanged, userId, userId);
 
         await uow.ExecuteInTransactionAsync(async t =>
         {
@@ -218,9 +233,8 @@ public sealed class AuthService(
         user.PasswordResetTokenHash = tokens.Hash(token);
         user.PasswordResetExpiresAt = Now.AddMinutes(_opt.PasswordResetMinutes);
         user.PasswordResetSentAt = Now;
+        outbox.EnqueuePasswordReset(user.Email, token, BuildResetLink(user.Email, token));
         await uow.SaveChangesAsync(ct);
-
-        await emailSender.SendPasswordResetAsync(user.Email, token, BuildResetLink(user.Email, token), ct);
     }
 
     public async Task ResetPasswordAsync(ResetPasswordRequest req, CancellationToken ct = default)
@@ -236,6 +250,7 @@ public sealed class AuthService(
         // take back an email that someone else registered first but never verified.
         user.EmailVerified = true;
         ClearVerificationCode(user);
+        audit.Record(AuditActions.PasswordReset, user.Id, user.Id);
 
         await uow.ExecuteInTransactionAsync(async t =>
         {
@@ -254,10 +269,14 @@ public sealed class AuthService(
     /// <summary>Logical delete of the caller's own account.</summary>
     public async Task DeleteAccountAsync(Guid userId, DeleteAccountRequest req, CancellationToken ct = default)
     {
-        var user = await users.GetByIdAsync(userId, ct) ?? throw new NotFoundException("User not found");
+        var user = await users.GetWithRolesAsync(userId, ct: ct) ?? throw new NotFoundException("User not found");
         if (user.PasswordHash is null || !await passwordHasher.VerifyAsync(req.Password, user.PasswordHash, ct))
             throw new UnauthorizedException("Password is incorrect", "INVALID_PASSWORD");
 
+        if (user.RoleNames().Contains(Role.Admin) && !await users.AnyOtherInRoleAsync(Role.Admin, userId, ct))
+            throw new BadRequestException("You are the last admin; promote someone else first", "LAST_ADMIN");
+
+        audit.Record(AuditActions.AccountDeleted, userId, userId);
         await uow.ExecuteInTransactionAsync(async t =>
         {
             await sessions.RevokeAllForUserAsync(userId, Now, ct: t);
@@ -280,7 +299,12 @@ public sealed class AuthService(
         if (isPrevious && justRotated)
             return await WaitForGraceAsync(presentedHash, ct) ?? throw InvalidRefreshToken();
 
-        await sessions.RevokeAsync(session.Id, Now, ct);
+        audit.Record(AuditActions.RefreshTokenReused, null, session.UserId, new { sessionId = session.Id });
+        await uow.ExecuteInTransactionAsync(async t =>
+        {
+            await sessions.RevokeAsync(session.Id, Now, t);
+            await uow.SaveChangesAsync(t);
+        }, ct);
         logger.LogWarning("Refresh token reuse detected for session {SessionId} of user {UserId}; session revoked",
             session.Id, session.UserId);
         throw new UnauthorizedException("Refresh token reuse detected, session revoked", "REFRESH_TOKEN_REUSED");
