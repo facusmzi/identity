@@ -19,6 +19,9 @@ public class User : BaseEntity
     public DateTime? PasswordResetExpiresAt { get; set; }
     public DateTime? PasswordResetSentAt { get; set; }
 
+    /// <summary>Locked by an admin (indefinitely, until unlocked): cannot log in, refresh or reset the password.</summary>
+    public DateTime? LockedAt { get; set; }
+
     public bool MfaEnabled { get; set; }
 
     /// <summary>TOTP secret, encrypted (AES-GCM, bound to the user id). Never stored in clear.</summary>

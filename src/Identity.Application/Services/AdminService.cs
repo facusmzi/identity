@@ -1,3 +1,4 @@
+using Identity.Domain.Enums;
 using Identity.Application.Abstractions.Persistence;
 using Identity.Application.Abstractions.Security;
 using Identity.Application.Common;
@@ -169,7 +170,7 @@ public sealed class AdminService(
         audit.Record(AuditActions.AdminUserDeleted, actingUserId, userId);
         await uow.ExecuteInTransactionAsync(async t =>
         {
-            await sessions.RevokeAllForUserAsync(userId, Now, ct: t);
+            await sessions.RevokeAllForUserAsync(userId, Now, RevocationReason.AdminDeleted, ct: t);
             users.Remove(user);
             await uow.SaveChangesAsync(t);
         }, ct);
@@ -188,6 +189,75 @@ public sealed class AdminService(
         audit.Record(AuditActions.AdminUserRestored, actingUserId, userId);
         await uow.SaveChangesAsync(ct);
         return user.ToAdminResponse();
+    }
+
+    /// <summary>
+    /// Incident response: the account stops working at once (all sessions revoked, login, refresh and password
+    /// reset refused) until an admin unlocks it. Unlike deleting, nothing is hidden and it is fully reversible.
+    /// </summary>
+    public async Task<AdminUserResponse> LockUserAsync(Guid actingUserId, Guid userId, CancellationToken ct = default)
+    {
+        if (userId == actingUserId) throw new BadRequestException("You cannot lock your own account", "SELF_LOCK");
+
+        var user = await users.GetWithRolesAsync(userId, ct: ct) ?? throw new NotFoundException("User not found");
+        await EnsureActorHoldsAsync(actingUserId, user.EffectivePermissions(), ct);
+        if (user.RoleNames().Contains(Role.Admin)) await EnsureNotLastAdminAsync(userId, ct);
+        if (user.LockedAt is not null) return user.ToAdminResponse();
+
+        user.LockedAt = Now;
+        audit.Record(AuditActions.AdminUserLocked, actingUserId, userId);
+        await uow.ExecuteInTransactionAsync(async t =>
+        {
+            await uow.SaveChangesAsync(t);
+            await sessions.RevokeAllForUserAsync(userId, Now, RevocationReason.AdminLocked, ct: t);
+        }, ct);
+        await sessionCache.InvalidateUserAsync(userId, ct);
+        return user.ToAdminResponse();
+    }
+
+    public async Task<AdminUserResponse> UnlockUserAsync(Guid actingUserId, Guid userId, CancellationToken ct = default)
+    {
+        var user = await users.GetWithRolesAsync(userId, ct: ct) ?? throw new NotFoundException("User not found");
+        await EnsureActorHoldsAsync(actingUserId, user.EffectivePermissions(), ct);
+        if (user.LockedAt is null) return user.ToAdminResponse();
+
+        user.LockedAt = null;
+        audit.Record(AuditActions.AdminUserUnlocked, actingUserId, userId);
+        await uow.SaveChangesAsync(ct);
+        return user.ToAdminResponse();
+    }
+
+    // ---- sessions of any user ----
+
+    public async Task<IReadOnlyList<AdminSessionResponse>> ListUserSessionsAsync(Guid userId, CancellationToken ct = default)
+    {
+        _ = await users.GetByIdIncludingDeletedAsync(userId, ct) ?? throw new NotFoundException("User not found");
+        var now = Now;
+        return (await sessions.ListForUserAsync(userId, ct)).Select(s => s.ToAdminResponse(now)).ToList();
+    }
+
+    /// <param name="sessionId">One session, or null for all of them.</param>
+    public async Task<int> RevokeUserSessionsAsync(Guid actingUserId, Guid userId, Guid? sessionId, CancellationToken ct = default)
+    {
+        var user = await users.GetWithRolesAsync(userId, ct: ct) ?? throw new NotFoundException("User not found");
+        await EnsureActorHoldsAsync(actingUserId, user.EffectivePermissions(), ct);
+
+        int revoked;
+        if (sessionId is { } id)
+        {
+            var session = await sessions.GetByIdAsync(id, ct);
+            if (session is null || session.UserId != userId) throw new NotFoundException("Session not found");
+            revoked = await sessions.RevokeAsync(id, Now, RevocationReason.AdminRevoked, ct);
+        }
+        else
+        {
+            revoked = await sessions.RevokeAllForUserAsync(userId, Now, RevocationReason.AdminRevoked, ct: ct);
+        }
+
+        audit.Record(AuditActions.AdminSessionsRevoked, actingUserId, userId, new { sessionId, revoked });
+        await uow.SaveChangesAsync(ct);
+        await sessionCache.InvalidateUserAsync(userId, ct);
+        return revoked;
     }
 
     // ---- helpers ----

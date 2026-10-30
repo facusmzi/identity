@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -11,6 +12,7 @@ namespace Identity.Api.Controllers;
 /// (for that, Jwt:Issuer must be this public base URL).
 /// </summary>
 [ApiController]
+[AllowAnonymous]
 [Route(".well-known")]
 public sealed class WellKnownController(SigningKeyProvider keys, IOptions<JwtOptions> jwt) : ControllerBase
 {

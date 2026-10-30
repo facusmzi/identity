@@ -9,6 +9,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Time.Testing;
 using Identity.Application.Options;
 using Identity.Application.Abstractions.Security;
 using Identity.Application.Dtos;
@@ -135,13 +136,13 @@ public class IdentityFactory : TestHostFactory
                 .AddInterceptors(sp.GetRequiredService<AuditAndSoftDeleteInterceptor>()));
 
             services.RemoveAll<IRefreshGraceStore>();
-            services.AddSingleton<IRefreshGraceStore, InMemoryRefreshGraceStore>();
+            services.AddSingleton<IRefreshGraceStore>(sp => new InMemoryRefreshGraceStore(sp.GetRequiredService<TimeProvider>()));
 
             services.RemoveAll<ILoginThrottle>();
             services.AddSingleton<ILoginThrottle, InMemoryLoginThrottle>();
 
             services.RemoveAll<ISessionCache>();
-            services.AddSingleton<ISessionCache, InMemorySessionCache>();
+            services.AddSingleton<ISessionCache>(sp => new InMemorySessionCache(sp.GetRequiredService<TimeProvider>()));
         });
     }
 
@@ -152,13 +153,23 @@ public class IdentityFactory : TestHostFactory
     }
 }
 
-/// <summary>Same refresh flow but with a 1 second grace window, so tests can step outside it.</summary>
-public sealed class ShortGraceFactory : IdentityFactory
+/// <summary>
+/// Same app with a controllable clock: tests move time forward instead of sleeping. The clock starts at the real
+/// time and auto-advances 1 ms per read so timestamps stay distinct and ordered. JWT validation still uses the real
+/// clock, so only jump far ahead in a factory used for nothing else afterwards.
+/// </summary>
+public sealed class TimeTravelFactory : IdentityFactory
 {
+    public FakeTimeProvider Clock { get; } = new(DateTimeOffset.UtcNow) { AutoAdvanceAmount = TimeSpan.FromMilliseconds(1) };
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         base.ConfigureWebHost(builder);
-        builder.UseSetting("Auth:RefreshGraceSeconds", "1");
+        builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<TimeProvider>();
+            services.AddSingleton<TimeProvider>(Clock);
+        });
     }
 }
 
@@ -244,7 +255,7 @@ public sealed class FakeBreachChecker : IPasswordBreachChecker
 }
 
 /// <summary>Same generation semantics as RedisSessionCache, in memory.</summary>
-public sealed class InMemorySessionCache : ISessionCache
+public sealed class InMemorySessionCache(TimeProvider clock) : ISessionCache
 {
     private readonly ConcurrentDictionary<Guid, (SessionPrincipal Principal, long Generation, DateTime ExpiresAt)> _entries = new();
     private readonly ConcurrentDictionary<Guid, long> _generations = new();
@@ -252,13 +263,13 @@ public sealed class InMemorySessionCache : ISessionCache
     public Task<(SessionPrincipal? Principal, long Generation)> GetAsync(Guid sessionId, Guid userId, CancellationToken ct = default)
     {
         var generation = _generations.GetValueOrDefault(userId);
-        var hit = _entries.TryGetValue(sessionId, out var e) && e.Generation == generation && e.ExpiresAt > DateTime.UtcNow;
+        var hit = _entries.TryGetValue(sessionId, out var e) && e.Generation == generation && e.ExpiresAt > clock.GetUtcNow().UtcDateTime;
         return Task.FromResult<(SessionPrincipal?, long)>((hit ? e.Principal : null, generation));
     }
 
     public Task SetAsync(SessionPrincipal principal, long generation, TimeSpan ttl, CancellationToken ct = default)
     {
-        _entries[principal.SessionId] = (principal, generation, DateTime.UtcNow + ttl);
+        _entries[principal.SessionId] = (principal, generation, clock.GetUtcNow().UtcDateTime + ttl);
         return Task.CompletedTask;
     }
 
@@ -269,18 +280,18 @@ public sealed class InMemorySessionCache : ISessionCache
     }
 }
 
-public sealed class InMemoryRefreshGraceStore : IRefreshGraceStore
+public sealed class InMemoryRefreshGraceStore(TimeProvider clock) : IRefreshGraceStore
 {
     private readonly ConcurrentDictionary<string, (AuthTokensResponse Tokens, DateTime ExpiresAt)> _items = new();
 
     public Task<AuthTokensResponse?> GetAsync(string oldRefreshTokenHash, CancellationToken ct = default) =>
-        Task.FromResult(_items.TryGetValue(oldRefreshTokenHash, out var item) && item.ExpiresAt > DateTime.UtcNow
+        Task.FromResult(_items.TryGetValue(oldRefreshTokenHash, out var item) && item.ExpiresAt > clock.GetUtcNow().UtcDateTime
             ? item.Tokens
             : null);
 
     public Task SetAsync(string oldRefreshTokenHash, AuthTokensResponse tokens, TimeSpan ttl, CancellationToken ct = default)
     {
-        _items[oldRefreshTokenHash] = (tokens, DateTime.UtcNow + ttl);
+        _items[oldRefreshTokenHash] = (tokens, clock.GetUtcNow().UtcDateTime + ttl);
         return Task.CompletedTask;
     }
 }

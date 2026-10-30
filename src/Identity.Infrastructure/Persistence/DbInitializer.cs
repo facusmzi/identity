@@ -72,6 +72,34 @@ public static class DbInitializer
             logger.LogInformation("Seeded admin user {Email}", adminEmail);
     }
 
+    /// <summary>For the seed-admin command: creates a verified admin, or promotes an existing user to Admin.</summary>
+    public static async Task<string> SeedAdminAsync(IServiceProvider services, string email, string password, CancellationToken ct = default)
+    {
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var hasher = scope.ServiceProvider.GetRequiredService<IPasswordHasher>();
+        email = email.Trim().ToLowerInvariant();
+
+        var adminRole = await db.Roles.FirstAsync(r => r.Name == Role.Admin, ct);
+        var existing = await db.Users.Include(u => u.UserRoles).FirstOrDefaultAsync(u => u.Email == email, ct);
+        if (existing is not null)
+        {
+            if (existing.UserRoles.Any(ur => ur.RoleId == adminRole.Id)) return $"{email} is already an admin; nothing changed.";
+            existing.UserRoles.Add(new UserRole { UserId = existing.Id, Role = adminRole });
+            await db.SaveChangesAsync(ct);
+            // Like every role change: cached sessions carry the roles, so make them stale.
+            await scope.ServiceProvider.GetRequiredService<ISessionCache>().InvalidateUserAsync(existing.Id, ct);
+            return $"{email} now has the Admin role (password unchanged).";
+        }
+
+        var roles = await db.Roles.Where(r => r.Name == Role.Admin || r.Name == Role.User).ToListAsync(ct);
+        var admin = new User { Email = email, PasswordHash = await hasher.HashAsync(password, ct), EmailVerified = true };
+        foreach (var role in roles) admin.UserRoles.Add(new UserRole { User = admin, Role = role });
+        db.Users.Add(admin);
+        await db.SaveChangesAsync(ct);
+        return $"Admin {email} created.";
+    }
+
     /// <summary>Another instance starting at the same time may seed first; that is fine.</summary>
     private static async Task<bool> SaveIgnoringRaceAsync(AppDbContext db, CancellationToken ct)
     {

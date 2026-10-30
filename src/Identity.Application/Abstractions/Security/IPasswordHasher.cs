@@ -11,4 +11,7 @@ public interface IPasswordHasher
 
     /// <summary>Burns the same CPU time as a real verify, to avoid user enumeration by timing.</summary>
     Task VerifyDummyAsync(string password, CancellationToken ct = default);
+
+    /// <summary>True when the hash was made with weaker parameters than the current ones (upgrade it on next login).</summary>
+    bool NeedsRehash(string hash);
 }

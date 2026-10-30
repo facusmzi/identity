@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Identity.Application.Abstractions.Persistence;
 using Identity.Domain.Entities;
+using Identity.Domain.Enums;
 
 namespace Identity.Infrastructure.Persistence.Repositories;
 
@@ -20,11 +21,12 @@ public sealed class SessionRepository(AppDbContext db) : ISessionRepository
     public Task<Session?> GetActiveWithUserAsync(Guid sessionId, DateTime now, CancellationToken ct = default) =>
         Set.AsNoTracking()
             .Include(s => s.User).ThenInclude(u => u.UserRoles).ThenInclude(ur => ur.Role).ThenInclude(r => r.RolePermissions)
-            .FirstOrDefaultAsync(s => s.Id == sessionId && s.RevokedAt == null && s.ExpiresAt > now, ct);
+            .FirstOrDefaultAsync(s => s.Id == sessionId && s.RevokedAt == null && s.ExpiresAt > now
+                                      && s.AbsoluteExpiresAt > now && s.User.LockedAt == null, ct);
 
     public async Task<IReadOnlyList<Session>> ListActiveForUserAsync(Guid userId, DateTime now, CancellationToken ct = default) =>
         await Set.AsNoTracking()
-            .Where(s => s.UserId == userId && s.RevokedAt == null && s.ExpiresAt > now)
+            .Where(s => s.UserId == userId && s.RevokedAt == null && s.ExpiresAt > now && s.AbsoluteExpiresAt > now)
             .OrderByDescending(s => s.CreatedAt)
             .ToListAsync(ct);
 
@@ -45,17 +47,23 @@ public sealed class SessionRepository(AppDbContext db) : ISessionRepository
         return affected == 1;
     }
 
-    public Task<int> RevokeAsync(Guid sessionId, DateTime now, CancellationToken ct = default) =>
+    public Task<int> RevokeAsync(Guid sessionId, DateTime now, RevocationReason reason, CancellationToken ct = default) =>
         Set.Where(s => s.Id == sessionId && s.RevokedAt == null)
             .ExecuteUpdateAsync(u => u
                 .SetProperty(s => s.RevokedAt, now)
+                .SetProperty(s => s.RevokedReason, reason)
                 .SetProperty(s => s.UpdatedAt, now), ct);
 
-    public Task<int> RevokeAllForUserAsync(Guid userId, DateTime now, Guid? exceptSessionId = null, CancellationToken ct = default) =>
+    public Task<int> RevokeAllForUserAsync(
+        Guid userId, DateTime now, RevocationReason reason, Guid? exceptSessionId = null, CancellationToken ct = default) =>
         Set.Where(s => s.UserId == userId && s.RevokedAt == null && (exceptSessionId == null || s.Id != exceptSessionId))
             .ExecuteUpdateAsync(u => u
                 .SetProperty(s => s.RevokedAt, now)
+                .SetProperty(s => s.RevokedReason, reason)
                 .SetProperty(s => s.UpdatedAt, now), ct);
+
+    public async Task<IReadOnlyList<Session>> ListForUserAsync(Guid userId, CancellationToken ct = default) =>
+        await Set.AsNoTracking().Where(s => s.UserId == userId).OrderByDescending(s => s.CreatedAt).Take(100).ToListAsync(ct);
 
     // Retention purge: the one sanctioned hard delete. Ended sessions carry no value after the retention period.
     public Task<int> PurgeEndedAsync(DateTime before, CancellationToken ct = default) =>

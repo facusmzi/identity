@@ -22,11 +22,12 @@ builder.Services
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IRequestContext, HttpRequestContext>();
-builder.Services.AddControllers();
+builder.Services.AddControllers(o => o.Filters.Add<CsrfFilter>());
 builder.Services.AddResponseCaching();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<AppExceptionHandler>();
 builder.Services.AddOpenApi();
+builder.Services.AddStrictTransportSecurity();
 
 var app = builder.Build();
 
@@ -35,16 +36,24 @@ app.Services.GetRequiredService<SigningKeyProvider>();
 app.Services.GetRequiredService<Identity.Application.Abstractions.Security.ISecretProtector>();
 await DbInitializer.InitializeAsync(app.Services);
 
+// `dotnet Identity.Api.dll seed-admin <email>` (password from IDENTITY_ADMIN_PASSWORD or stdin): creates or
+// promotes an admin without leaving the password in any configuration file. Runs and exits.
+if (args is ["seed-admin", ..])
+    return await AdminCommand.SeedAdminAsync(app.Services, args);
+
 // Must run first so the rate limiter, sessions and the audit log see the real client address.
 if (builder.Configuration.HasTrustedProxies())
     app.UseForwardedHeaders();
 
 app.UseExceptionHandler();
+app.UseSecurityHeaders(app.Environment);
+if (!app.Environment.IsDevelopment())
+    app.UseHsts();
 
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();
-    app.MapScalarApiReference();
+    app.MapOpenApi().AllowAnonymous();
+    app.MapScalarApiReference().AllowAnonymous();
 }
 
 app.UseCors(OperationsExtensions.CorsPolicy);
@@ -56,5 +65,6 @@ app.MapControllers();
 app.MapIdentityHealthChecks();
 
 app.Run();
+return 0;
 
 public partial class Program;

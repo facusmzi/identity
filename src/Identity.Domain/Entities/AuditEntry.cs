@@ -40,6 +40,9 @@ public static class AuditActions
     public const string AdminRoleCreated = "admin.role_created";
     public const string AdminRolePermissionsChanged = "admin.role_permissions_changed";
     public const string AdminRoleDeleted = "admin.role_deleted";
+    public const string AdminUserLocked = "admin.user_locked";
+    public const string AdminUserUnlocked = "admin.user_unlocked";
+    public const string AdminSessionsRevoked = "admin.sessions_revoked";
 
     public const string MfaEnabled = "mfa.enabled";
     public const string MfaDisabled = "mfa.disabled";

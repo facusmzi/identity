@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using Identity.Domain.Enums;
 using Identity.Application.Abstractions.Persistence;
 using Identity.Application.Abstractions.Security;
 using Identity.Application.Common;
@@ -27,7 +28,7 @@ public sealed class SessionService(
         if (session is null || session.RevokedAt is not null) throw new NotFoundException("Session not found");
         if (session.UserId != userId) throw new ForbiddenException("Forbidden");
 
-        await sessions.RevokeAsync(sessionId, Now, ct);
+        await sessions.RevokeAsync(sessionId, Now, RevocationReason.RevokedByUser, ct);
         await cache.InvalidateUserAsync(userId, ct);
         return session.Id == currentSessionId;
     }

@@ -15,13 +15,17 @@ internal static class Mappings
         new(user.Id, user.Email, user.EmailVerified, user.RoleNames(), user.EffectivePermissions(), user.MfaEnabled, user.CreatedAt);
 
     public static AdminUserResponse ToAdminResponse(this User user) =>
-        new(user.Id, user.Email, user.EmailVerified, user.RoleNames(), user.MfaEnabled, user.CreatedAt, user.UpdatedAt, user.DeletedAt);
+        new(user.Id, user.Email, user.EmailVerified, user.RoleNames(), user.MfaEnabled, user.LockedAt, user.CreatedAt, user.UpdatedAt, user.DeletedAt);
 
     public static RoleResponse ToResponse(this Role role) =>
         new(role.Id, role.Name, role.Description, role.EffectivePermissions(), role.IsSystem);
 
     public static AuditEntryResponse ToResponse(this AuditEntry e) =>
         new(e.Id, e.OccurredAt, e.Action, e.ActorUserId, e.TargetUserId, e.IpAddress, e.Details);
+
+    public static AdminSessionResponse ToAdminResponse(this Session s, DateTime now) =>
+        new(s.Id, s.IpAddress, s.UserAgent, s.LoginMethod.ToString(), s.CreatedAt, s.ExpiresAt, s.AbsoluteExpiresAt,
+            s.RevokedAt, s.RevokedReason?.ToString(), s.IsActive(now));
 
     public static SessionResponse ToResponse(this Session s, Guid currentSessionId) =>
         new(s.Id, s.IpAddress, s.UserAgent, s.LoginMethod.ToString().ToLowerInvariant(), s.ExpiresAt, s.CreatedAt, s.Id == currentSessionId);

@@ -165,8 +165,16 @@ public sealed class AuthService(
 
         await loginThrottle.ResetAsync(email, ct);
 
-        if (!user!.EmailVerified)
+        // Only revealed to someone who knows the password, so it does not help enumerate accounts.
+        if (user!.LockedAt is not null)
+            throw new ForbiddenException("This account has been disabled. Contact support.", "ACCOUNT_DISABLED");
+
+        if (!user.EmailVerified)
             throw new ForbiddenException("Email not verified", "EMAIL_NOT_VERIFIED");
+
+        // Hashes made with weaker parameters are upgraded transparently the next time the password is known.
+        if (passwordHasher.NeedsRehash(user.PasswordHash!))
+            user.PasswordHash = await passwordHasher.HashAsync(req.Password, ct);
 
         if (user.MfaEnabled)
         {
@@ -198,7 +206,7 @@ public sealed class AuthService(
         if (challenge is null || challenge.FailedAttempts >= _mfaOpt.ChallengeMaxAttempts) throw MfaInvalid();
 
         var user = await users.GetByIdAsync(challenge.UserId, ct);
-        if (user is not { MfaEnabled: true, EmailVerified: true }) throw MfaInvalid();
+        if (user is not { MfaEnabled: true, EmailVerified: true, LockedAt: null }) throw MfaInvalid();
 
         if (await loginThrottle.GetLockoutAsync(user.Email, ct) is { } remaining)
             throw new TooManyRequestsException("Too many failed attempts, account temporarily locked", "ACCOUNT_LOCKED", remaining);
@@ -231,6 +239,7 @@ public sealed class AuthService(
 
     public async Task<AuthTokensResponse> RefreshAsync(RefreshRequest req, ClientMeta meta, CancellationToken ct = default)
     {
+        if (string.IsNullOrEmpty(req.RefreshToken)) throw InvalidRefreshToken();
         var presentedHash = tokens.Hash(req.RefreshToken);
 
         if (await graceStore.GetAsync(presentedHash, ct) is { } cached)
@@ -240,14 +249,14 @@ public sealed class AuthService(
             throw InvalidRefreshToken();
 
         var session = await sessions.GetWithUserAsync(sessionId, ct);
-        if (session is null || !session.IsActive(Now))
+        if (session is null || !session.IsActive(Now) || session.User.LockedAt is not null)
             throw InvalidRefreshToken();
 
         if (!FixedTimeEquals(presentedHash, session.RefreshTokenHash))
             return await HandleStaleRefreshTokenAsync(session, presentedHash, ct);
 
         var refreshToken = tokens.GenerateRefreshToken(session.Id);
-        var refreshExpiresAt = Now.AddDays(_opt.RefreshTokenDays);
+        var refreshExpiresAt = Session.SlidingExpiry(Now, TimeSpan.FromDays(_opt.RefreshTokenDays), session.AbsoluteExpiresAt);
 
         var rotated = await sessions.TryRotateRefreshTokenAsync(
             session.Id, presentedHash, tokens.Hash(refreshToken), refreshExpiresAt,
@@ -269,13 +278,13 @@ public sealed class AuthService(
 
     public async Task LogoutAsync(Guid userId, Guid sessionId, CancellationToken ct = default)
     {
-        await sessions.RevokeAsync(sessionId, Now, ct);
+        await sessions.RevokeAsync(sessionId, Now, RevocationReason.Logout, ct);
         await sessionCache.InvalidateUserAsync(userId, ct);
     }
 
     public async Task LogoutAllAsync(Guid userId, CancellationToken ct = default)
     {
-        await sessions.RevokeAllForUserAsync(userId, Now, ct: ct);
+        await sessions.RevokeAllForUserAsync(userId, Now, RevocationReason.LogoutAll, ct: ct);
         await sessionCache.InvalidateUserAsync(userId, ct);
     }
 
@@ -295,7 +304,7 @@ public sealed class AuthService(
         await uow.ExecuteInTransactionAsync(async t =>
         {
             await uow.SaveChangesAsync(t);
-            await sessions.RevokeAllForUserAsync(userId, Now, exceptSessionId: currentSessionId, t);
+            await sessions.RevokeAllForUserAsync(userId, Now, RevocationReason.PasswordChanged, currentSessionId, t);
         }, ct);
         await sessionCache.InvalidateUserAsync(userId, ct);
     }
@@ -307,7 +316,7 @@ public sealed class AuthService(
     public async Task ForgotPasswordAsync(ForgotPasswordRequest req, CancellationToken ct = default)
     {
         var user = await users.GetByEmailAsync(NormalizeEmail(req.Email), ct);
-        if (user is null) return;
+        if (user is null || user.LockedAt is not null) return; // locked accounts are only unlocked by an admin
 
         if (user.PasswordResetSentAt is { } sentAt
             && Now - sentAt < TimeSpan.FromSeconds(_opt.PasswordResetCooldownSeconds))
@@ -325,7 +334,7 @@ public sealed class AuthService(
     {
         var user = await users.GetByEmailAsync(NormalizeEmail(req.Email), ct);
         if (user?.PasswordResetTokenHash is null || user.PasswordResetExpiresAt is null || user.PasswordResetExpiresAt < Now
-            || !FixedTimeEquals(tokens.Hash(req.Token), user.PasswordResetTokenHash))
+            || user.LockedAt is not null || !FixedTimeEquals(tokens.Hash(req.Token), user.PasswordResetTokenHash))
             throw new BadRequestException("Invalid or expired reset token", "INVALID_RESET_TOKEN");
 
         await passwordPolicy.EnsureAcceptableAsync(req.NewPassword, user.Email, user.Id, ct);
@@ -340,7 +349,7 @@ public sealed class AuthService(
         await uow.ExecuteInTransactionAsync(async t =>
         {
             await uow.SaveChangesAsync(t);
-            await sessions.RevokeAllForUserAsync(user.Id, Now, ct: t);
+            await sessions.RevokeAllForUserAsync(user.Id, Now, RevocationReason.PasswordReset, ct: t);
         }, ct);
         await sessionCache.InvalidateUserAsync(user.Id, ct);
         await loginThrottle.ResetAsync(user.Email, ct);
@@ -365,7 +374,7 @@ public sealed class AuthService(
         audit.Record(AuditActions.AccountDeleted, userId, userId);
         await uow.ExecuteInTransactionAsync(async t =>
         {
-            await sessions.RevokeAllForUserAsync(userId, Now, ct: t);
+            await sessions.RevokeAllForUserAsync(userId, Now, RevocationReason.AccountDeleted, ct: t);
             users.Remove(user);
             await uow.SaveChangesAsync(t);
         }, ct);
@@ -389,7 +398,7 @@ public sealed class AuthService(
         audit.Record(AuditActions.RefreshTokenReused, null, session.UserId, new { sessionId = session.Id });
         await uow.ExecuteInTransactionAsync(async t =>
         {
-            await sessions.RevokeAsync(session.Id, Now, t);
+            await sessions.RevokeAsync(session.Id, Now, RevocationReason.RefreshTokenReused, t);
             await uow.SaveChangesAsync(t);
         }, ct);
         await sessionCache.InvalidateUserAsync(session.UserId, ct);
@@ -411,13 +420,15 @@ public sealed class AuthService(
 
     private async Task<AuthTokensResponse> CreateSessionAsync(User user, LoginMethod method, ClientMeta meta, CancellationToken ct)
     {
+        var absolute = Now.AddDays(Math.Max(_opt.SessionAbsoluteDays, 1));
         var session = new Session
         {
             UserId = user.Id,
             LoginMethod = method,
             IpAddress = meta.IpAddress,
             UserAgent = Truncate(meta.UserAgent, 512),
-            ExpiresAt = Now.AddDays(_opt.RefreshTokenDays),
+            AbsoluteExpiresAt = absolute,
+            ExpiresAt = Session.SlidingExpiry(Now, TimeSpan.FromDays(_opt.RefreshTokenDays), absolute),
         };
         var refreshToken = tokens.GenerateRefreshToken(session.Id);
         session.RefreshTokenHash = tokens.Hash(refreshToken);

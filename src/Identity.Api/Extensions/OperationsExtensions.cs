@@ -23,24 +23,29 @@ public static class OperationsExtensions
 
     public static void MapIdentityHealthChecks(this IEndpointRouteBuilder app)
     {
-        app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
-        app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = c => c.Tags.Contains(ReadyTag) });
+        app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false }).AllowAnonymous();
+        app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = c => c.Tags.Contains(ReadyTag) }).AllowAnonymous();
     }
 
     /// <summary>
-    /// Cross-origin access only for the origins in Cors:AllowedOrigins (none by default). Tokens travel in the
-    /// Authorization header and request bodies, never in cookies, so credentials are not allowed.
+    /// Cross-origin access only for the origins in Cors:AllowedOrigins (none by default). Credentials are allowed
+    /// for those exact origins so a frontend on another subdomain can use the session cookies; the cookies are
+    /// SameSite=Strict, so that frontend must be on the same site (e.g. app.example.com with auth.example.com).
     /// </summary>
     public static IServiceCollection AddFrontendCors(this IServiceCollection services, IConfiguration config)
     {
         var origins = config.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
+        if (origins.Contains("*"))
+            throw new InvalidOperationException("Cors:AllowedOrigins cannot be '*': list the frontend origins explicitly.");
+
         services.AddCors(options => options.AddPolicy(CorsPolicy, policy =>
         {
             if (origins.Length == 0) return;
             policy.WithOrigins(origins)
-                .WithMethods("GET", "POST", "DELETE")
-                .WithHeaders("Authorization", "Content-Type")
+                .WithMethods("GET", "POST", "PUT", "DELETE")
+                .WithHeaders("Authorization", "Content-Type", SessionCookies.CsrfHeader)
                 .WithExposedHeaders("Retry-After")
+                .AllowCredentials()
                 .SetPreflightMaxAge(TimeSpan.FromHours(1));
         }));
         return services;

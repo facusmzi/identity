@@ -33,10 +33,24 @@ public static class AuthenticationExtensions
                     NameClaimType = JwtRegisteredClaimNames.Sub,
                     RoleClaimType = RoleClaim,
                 };
-                options.Events = new JwtBearerEvents { OnTokenValidated = ValidateSessionAsync };
+                options.Events = new JwtBearerEvents
+                {
+                    // Browser sessions: no Authorization header, the access token comes from the HttpOnly cookie.
+                    OnMessageReceived = context =>
+                    {
+                        if (!context.Request.Headers.ContainsKey("Authorization")
+                            && context.Request.Cookies.TryGetValue(SessionCookies.Access, out var cookie))
+                            context.Token = cookie;
+                        return Task.CompletedTask;
+                    },
+                    OnTokenValidated = ValidateSessionAsync,
+                };
             });
 
-        services.AddAuthorization();
+        // Fallback policy: every endpoint requires a valid session unless it is explicitly [AllowAnonymous], so a
+        // forgotten [Authorize] never leaves anything open (and anonymous callers get 401 even on unknown routes).
+        services.AddAuthorization(o => o.FallbackPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder()
+            .RequireAuthenticatedUser().Build());
         services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationPolicyProvider, PermissionPolicyProvider>();
         return services;
     }

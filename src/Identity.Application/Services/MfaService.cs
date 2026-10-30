@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using Identity.Domain.Enums;
 using Identity.Application.Abstractions.Messaging;
 using Identity.Application.Abstractions.Persistence;
 using Identity.Application.Abstractions.Security;
@@ -77,7 +78,7 @@ public sealed class MfaService(
             outbox.EnqueueSecurityNotice(user.Email, "Two-factor authentication enabled",
                 "Two-factor authentication was turned on for your account. If this wasn't you, reset your password now.");
             await uow.SaveChangesAsync(t);
-            await sessions.RevokeAllForUserAsync(userId, Now, exceptSessionId: currentSessionId, t);
+            await sessions.RevokeAllForUserAsync(userId, Now, RevocationReason.MfaChanged, currentSessionId, t);
         }, ct);
         await sessionCache.InvalidateUserAsync(userId, ct);
         return new RecoveryCodesResponse(codes);
@@ -111,7 +112,7 @@ public sealed class MfaService(
             outbox.EnqueueSecurityNotice(user.Email, "Two-factor authentication disabled",
                 "Two-factor authentication was turned off for your account. If this wasn't you, reset your password now.");
             await uow.SaveChangesAsync(t);
-            await sessions.RevokeAllForUserAsync(userId, Now, exceptSessionId: currentSessionId, t);
+            await sessions.RevokeAllForUserAsync(userId, Now, RevocationReason.MfaChanged, currentSessionId, t);
         }, ct);
         await sessionCache.InvalidateUserAsync(userId, ct);
     }

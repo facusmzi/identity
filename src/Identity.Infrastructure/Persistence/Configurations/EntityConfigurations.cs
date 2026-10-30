@@ -78,6 +78,7 @@ internal sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
         b.Property(s => s.IpAddress).HasMaxLength(64);
         b.Property(s => s.UserAgent).HasMaxLength(512);
         b.Property(s => s.LoginMethod).HasConversion<string>().HasMaxLength(32);
+        b.Property(s => s.RevokedReason).HasConversion<string>().HasMaxLength(32);
         b.HasIndex(s => s.RefreshTokenHash).IsUnique();
         b.HasIndex(s => new { s.UserId, s.RevokedAt });
         b.HasOne(s => s.User).WithMany(u => u.Sessions).HasForeignKey(s => s.UserId).OnDelete(DeleteBehavior.Cascade);

@@ -24,9 +24,11 @@ public sealed record ResendVerificationRequest([Required, EmailAddress, MaxLengt
 
 public sealed record LoginRequest(
     [Required, EmailAddress, MaxLength(254)] string Email,
-    [Required, MaxLength(PasswordRules.MaxLength)] string Password);
+    [Required, MaxLength(PasswordRules.MaxLength)] string Password,
+    bool UseCookies = false);
 
-public sealed record RefreshRequest([Required, MaxLength(256)] string RefreshToken);
+/// <summary>The refresh token goes in the body (bearer clients) or comes from the session cookie (browsers).</summary>
+public sealed record RefreshRequest([MaxLength(256)] string? RefreshToken);
 
 public sealed record ChangePasswordRequest(
     [Required, MaxLength(PasswordRules.MaxLength)] string OldPassword,
@@ -70,7 +72,8 @@ public sealed record LoginResponse(
 public sealed record MfaLoginRequest(
     [Required, MaxLength(256)] string MfaToken,
     [MaxLength(16)] string? Code,
-    [MaxLength(32)] string? RecoveryCode);
+    [MaxLength(32)] string? RecoveryCode,
+    bool UseCookies = false);
 
 public sealed record MfaStatusResponse(bool Enabled, int RecoveryCodesLeft);
 

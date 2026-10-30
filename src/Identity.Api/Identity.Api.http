@@ -3,6 +3,7 @@
 # Pegá acá los valores que devuelven login / refresh
 @accessToken =
 @refreshToken =
+@userId =
 
 ### Register
 POST {{base}}/auth/register
@@ -133,3 +134,25 @@ Authorization: Bearer {{accessToken}}
 Content-Type: application/json
 
 { "permissions": ["users.read", "audit.read"] }
+
+### Admin: bloquear un usuario (revoca sus sesiones; se deshace con /unlock)
+POST {{base}}/admin/users/{{userId}}/lock
+Authorization: Bearer {{accessToken}}
+
+### Admin: sesiones de un usuario (con el motivo de revocación)
+GET {{base}}/admin/users/{{userId}}/sessions
+Authorization: Bearer {{accessToken}}
+
+### Admin: revocar todas las sesiones de un usuario
+DELETE {{base}}/admin/users/{{userId}}/sessions
+Authorization: Bearer {{accessToken}}
+
+### Login en modo cookies (frontend web): los tokens quedan en cookies HttpOnly
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "{{email}}", "password": "Passw0rd!", "useCookies": true }
+
+### Refresh por cookie (sin body). Requiere el valor de la cookie __Host-identity-csrf en el header
+POST {{base}}/auth/refresh
+X-CSRF-Token: pegar-valor-de-la-cookie-csrf

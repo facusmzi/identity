@@ -12,6 +12,8 @@ public static class Permissions
     public const string RolesManage = "roles.manage";
     public const string RolesAssign = "roles.assign";
     public const string AuditRead = "audit.read";
+    public const string SessionsReadAny = "sessions.read.any";
+    public const string SessionsRevokeAny = "sessions.revoke.any";
 
     public static IReadOnlyList<string> All { get; } =
     [
@@ -21,6 +23,8 @@ public static class Permissions
         RolesManage,
         RolesAssign,
         AuditRead,
+        SessionsReadAny,
+        SessionsRevokeAny,
     ];
 
     public static bool IsKnown(string permission) => All.Contains(permission, StringComparer.Ordinal);

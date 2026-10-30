@@ -8,6 +8,7 @@ public sealed record AdminUserResponse(
     bool EmailVerified,
     IReadOnlyList<string> Roles,
     bool MfaEnabled,
+    DateTime? LockedAt,
     DateTime CreatedAt,
     DateTime UpdatedAt,
     DateTime? DeletedAt);
@@ -32,3 +33,15 @@ public sealed record AuditEntryResponse(
     Guid? TargetUserId,
     string? IpAddress,
     string? Details);
+
+public sealed record AdminSessionResponse(
+    Guid Id,
+    string? IpAddress,
+    string? UserAgent,
+    string LoginMethod,
+    DateTime CreatedAt,
+    DateTime ExpiresAt,
+    DateTime AbsoluteExpiresAt,
+    DateTime? RevokedAt,
+    string? RevokedReason,
+    bool Active);

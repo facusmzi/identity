@@ -7,3 +7,5 @@ TestResults/
 appsettings.*.local.json
 .keys/
 artifacts/
+# Notas de diseño locales (no se versionan)
+DECISIONS.md

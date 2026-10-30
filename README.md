@@ -53,8 +53,29 @@ Dependencias: `Api → Application ← Infrastructure` y `Application → Domain
   (para eso `Jwt:Issuer` tiene que ser esa URL pública).
 - **Rotación de claves**: `Jwt:SigningKeys` es una lista; la primera firma y todas se publican y aceptan. Para rotar,
   agregá la nueva primera, esperá a que venzan los tokens viejos (15 min) y quitá la anterior.
-- Refresh token opaco (`{sessionId}.{random}`, 30 días); en la base solo se guarda su SHA-256. La rotación es atómica
-  y una **ventana de gracia de 5 s** (Redis) cubre los refresh concurrentes.
+- Refresh token opaco (`{sessionId}.{random}`); en la base solo se guarda su SHA-256. La rotación es atómica y una
+  **ventana de gracia de 5 s** (Redis) cubre los refresh concurrentes.
+- **Vencimiento deslizante y absoluto**: cada refresh extiende la sesión 30 días (`Auth:RefreshTokenDays`), pero
+  nunca más allá de 90 días desde el login (`Auth:SessionAbsoluteDays`). Pasado eso hay que volver a loguearse, así un
+  refresh token robado no sirve para siempre.
+- Cada sesión revocada guarda el **motivo** (`Logout`, `PasswordChanged`, `RefreshTokenReused`, `AdminLocked`...).
+
+### Dos formas de usar la sesión
+
+- **Bearer** (apps móviles, otros servicios, scripts): `POST /auth/login` devuelve los tokens en el body; se mandan
+  en `Authorization: Bearer ...` y el refresh token en el body de `/auth/refresh`.
+- **Cookies** (frontend web): `POST /auth/login` (y `/auth/login/mfa`) con `"useCookies": true`. Los tokens van en
+  cookies `__Host-identity-access` y `__Host-identity-refresh` (HttpOnly, Secure, SameSite=Strict, sin Domain):
+  JavaScript no puede leerlos, así que un XSS no los roba, y ningún subdominio puede pisarlos. El body trae solo
+  los vencimientos. `/auth/refresh` sin body usa la cookie; logout las borra.
+- **CSRF (solo en modo cookies)**: el login también pone `__Host-identity-csrf`, legible por la página. Todo request
+  que modifica algo (POST/PUT/DELETE) autenticado por cookie tiene que mandar ese valor en el header
+  `X-CSRF-Token`; si no, `403 CSRF_INVALID`. Otro sitio no puede leer la cookie ni hacer que el navegador mande el
+  header. El token cambia en cada refresh. Con header `Authorization` no hace falta (el navegador nunca lo agrega
+  solo).
+- El frontend tiene que estar en el mismo *site* que Identity (por ejemplo `tienda.com` y `auth.tienda.com`), por
+  `SameSite=Strict`, y figurar en `Cors:AllowedOrigins` (que habilita credenciales; `*` no se acepta). Las requests
+  van con `credentials: "include"`.
 - **Detección de reuso**: un refresh token ya rotado que llega fuera de la ventana se asume robado y se revoca la
   sesión entera (`REFRESH_TOKEN_REUSED`, queda en la auditoría).
 - Las sesiones se leen sin tracking y solo se modifican con UPDATEs atómicos del repositorio (nunca entidades
@@ -94,7 +115,8 @@ Dependencias: `Api → Application ← Infrastructure` y `Application → Domain
 
 ## Administración, permisos y auditoría
 
-- **Permisos**: `users.read`, `users.manage`, `roles.read`, `roles.manage`, `roles.assign`, `audit.read`. Cada endpoint
+- **Permisos**: `users.read`, `users.manage`, `roles.read`, `roles.manage`, `roles.assign`, `audit.read`,
+  `sessions.read.any`, `sessions.revoke.any`. Cada endpoint
   de admin pide uno; los roles los agrupan (`/admin/roles`). `Admin` los tiene todos siempre y sus permisos no se
   editan; `Admin` y `User` no se pueden borrar. Los cambios de permisos de un rol aplican a sus miembros en el
   request siguiente.
@@ -103,6 +125,11 @@ Dependencias: `Api → Application ← Infrastructure` y `Application → Domain
   (`PRIVILEGE_ESCALATION`).
 - Un admin no puede quitarse su propio rol, para borrar a otro admin primero hay que quitarle el rol, y nunca se puede
   quedar el sistema sin admins (`LAST_ADMIN`).
+- **Bloqueo de cuentas** (respuesta a incidentes): `POST /admin/users/{id}/lock` deja la cuenta inutilizable al
+  instante (revoca todas sus sesiones; login, refresh y reset de contraseña rechazados) hasta `unlock`. A diferencia de
+  borrar, no oculta nada y es reversible. El usuario solo ve `ACCOUNT_DISABLED` si pone la contraseña correcta.
+- **Sesiones de cualquier usuario**: `GET /admin/users/{id}/sessions` (activas y terminadas, con el motivo) y revocar
+  una o todas.
 - `audit_log` registra, en la misma transacción que la acción: logins (ok y fallidos), bloqueos, verificación,
   cambio y reset de contraseña, reuso de refresh token, borrado de cuenta y todas las acciones de admin (con quién la
   hizo, a quién y desde qué IP). Nunca guarda contraseñas ni tokens. Se consulta en `GET /admin/audit`.
@@ -110,14 +137,19 @@ Dependencias: `Api → Application ← Infrastructure` y `Application → Domain
 ## Protecciones
 
 - **Argon2 acotado**: como mucho `PasswordHashing:MaxConcurrent` hashes a la vez; si no hay lugar responde `503`.
-  Todas las contraseñas tienen máximo 128 caracteres.
+  Todas las contraseñas tienen máximo 128 caracteres. Si se suben los parámetros, los hashes viejos se recalculan
+  solos en el próximo login.
+- **Todo exige autenticación por defecto** (fallback policy): cada endpoint anónimo está marcado explícitamente, así
+  que olvidarse un `[Authorize]` no deja nada abierto. Un anónimo recibe 401 incluso en rutas que no existen.
+- **Headers de seguridad**: `nosniff`, `X-Frame-Options: DENY`, CSP que no permite nada, `Referrer-Policy`,
+  `Permissions-Policy`, HSTS fuera de Development y `Cache-Control: no-store` en todo salvo el JWKS.
 - **Bloqueo por cuenta** (Redis): 10 logins fallidos en 15 min bloquean ese email 15 min (`429 ACCOUNT_LOCKED`).
 - **Rate limit por IP** (en memoria, por instancia): 5/min en register, resend y forgot; 10/min en el resto.
 - **Arranque seguro**: fuera de `Development`/`Testing` la API no arranca sin clave de firma, sin clave de cifrado,
   sin SMTP o con un admin sembrado débil, y carga las claves al iniciar (una clave ilegible frena el arranque, no
   cada request).
 - **Proxies**: `X-Forwarded-For` solo se acepta de `ForwardedHeaders:KnownProxies` / `KnownNetworks`.
-- **CORS** cerrado salvo los orígenes de `Cors:AllowedOrigins`.
+- **CORS** cerrado salvo los orígenes de `Cors:AllowedOrigins` (con credenciales, para las cookies; nunca `*`).
 
 ### Riesgos conocidos
 
@@ -143,7 +175,7 @@ dotnet run --project src/Identity.Api --launch-profile http
 ```
 
 - API: http://localhost:5205 · Docs (Scalar): http://localhost:5205/scalar · Mails: http://localhost:8025 (Mailpit)
-- Admin sembrado en Development: `admin@identity.local` / `Admin12345`.
+- Admin sembrado en Development: `admin@identity.local` / `Admin12345` (por configuración `Seed:*`, solo para local).
 - En Development las migraciones se aplican solas y la clave de firma se genera en `src/Identity.Api/.keys/`
   (ignorada por git), igual que la clave de cifrado de los secretos TOTP.
 - Health: `/health/live` (proceso vivo) y `/health/ready` (Postgres y Redis responden).
@@ -164,7 +196,10 @@ podman build -t identity-migrator --target migrator .   # bundle de migraciones
    `SecretEncryption__Keys__0__Key=<base64>`. Guardala bien: sin ella nadie puede usar su MFA.
 4. Variables: `ConnectionStrings__Postgres`, `ConnectionStrings__Redis`, `Smtp__*`, `Jwt__Issuer` (URL pública),
    `Cors__AllowedOrigins__0`, `ForwardedHeaders__KnownNetworks__0` si hay proxy.
-5. Los logs salen en JSON (una línea por evento, con request id y trace id).
+5. **Primer admin**: `IDENTITY_ADMIN_PASSWORD=... dotnet Identity.Api.dll seed-admin admin@tu-dominio.com` (o en el
+   contenedor con `podman run ... identity-api seed-admin ...`). Crea el admin, o le da el rol a un usuario existente,
+   sin que la contraseña quede en archivos ni en el historial del shell.
+6. Los logs salen en JSON (una línea por evento, con request id y trace id).
 
 ## Endpoints
 
@@ -183,6 +218,9 @@ podman build -t identity-migrator --target migrator .   # bundle de migraciones
 | GET | `/admin/audit?userId=&action=&page=&pageSize=` | `audit.read` |
 | DELETE / POST | `/admin/users/{id}` · `/admin/users/{id}/restore` | `users.manage` |
 | POST / DELETE | `/admin/users/{id}/roles` · `/admin/users/{id}/roles/{role}` | `roles.assign` |
+| POST | `/admin/users/{id}/lock` · `/admin/users/{id}/unlock` | `users.manage` |
+| GET | `/admin/users/{id}/sessions` | `sessions.read.any` |
+| DELETE | `/admin/users/{id}/sessions` · `/admin/users/{id}/sessions/{sessionId}` | `sessions.revoke.any` |
 | GET | `/.well-known/jwks.json` · `/.well-known/openid-configuration` · `/health/live` · `/health/ready` | — |
 
 Ejemplos listos para usar en [`src/Identity.Api/Identity.Api.http`](src/Identity.Api/Identity.Api.http).

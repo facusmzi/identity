@@ -4,7 +4,12 @@ public sealed class AuthOptions
 {
     public const string Section = "Auth";
 
+    /// <summary>Sliding lifetime of a session: each refresh extends it by this much (up to the absolute limit).</summary>
     public int RefreshTokenDays { get; set; } = 30;
+
+    /// <summary>Absolute lifetime: after this many days from login the user must log in again, refreshed or not.</summary>
+    public int SessionAbsoluteDays { get; set; } = 90;
+
     /// <summary>Long enough for client retries and parallel requests; every second is also a window for a stolen token.</summary>
     public int RefreshGraceSeconds { get; set; } = 5;
 

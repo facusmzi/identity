@@ -61,6 +61,22 @@ public sealed class Argon2PasswordHasher : IPasswordHasher, IDisposable
 
     public Task VerifyDummyAsync(string password, CancellationToken ct = default) => VerifyAsync(password, _dummyHash, ct);
 
+    /// <summary>Any parameter below the configured one (or an unparseable hash) means "upgrade it".</summary>
+    public bool NeedsRehash(string encoded)
+    {
+        var parts = encoded.Split('$');
+        if (parts is not [_, "argon2id", "v=19", var paramPart, _, _]) return true;
+        try
+        {
+            var p = paramPart.Split(',').Select(x => x.Split('=')).ToDictionary(x => x[0], x => int.Parse(x[1]));
+            return p["m"] < _opt.MemoryKb || p["t"] < _opt.Iterations || p["p"] < _opt.Parallelism;
+        }
+        catch (Exception ex) when (ex is FormatException or KeyNotFoundException or IndexOutOfRangeException)
+        {
+            return true;
+        }
+    }
+
     public void Dispose() => _slots.Dispose();
 
     private async Task<byte[]> ComputeAsync(

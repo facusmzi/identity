@@ -39,6 +39,33 @@ public sealed class AdminController(AdminService admin) : ControllerBase
     public async Task<ActionResult<AdminUserResponse>> RestoreUser(Guid id, CancellationToken ct) =>
         await admin.RestoreUserAsync(User.GetUserId(), id, ct);
 
+    /// <summary>Disables the account until unlocked and revokes all its sessions.</summary>
+    [HttpPost("users/{id:guid}/lock")]
+    [HasPermission(Permissions.UsersManage)]
+    public async Task<ActionResult<AdminUserResponse>> LockUser(Guid id, CancellationToken ct) =>
+        await admin.LockUserAsync(User.GetUserId(), id, ct);
+
+    [HttpPost("users/{id:guid}/unlock")]
+    [HasPermission(Permissions.UsersManage)]
+    public async Task<ActionResult<AdminUserResponse>> UnlockUser(Guid id, CancellationToken ct) =>
+        await admin.UnlockUserAsync(User.GetUserId(), id, ct);
+
+    /// <summary>Active and ended sessions (until purged), with the reason they were revoked.</summary>
+    [HttpGet("users/{id:guid}/sessions")]
+    [HasPermission(Permissions.SessionsReadAny)]
+    public async Task<ActionResult<IReadOnlyList<AdminSessionResponse>>> ListUserSessions(Guid id, CancellationToken ct) =>
+        Ok(await admin.ListUserSessionsAsync(id, ct));
+
+    [HttpDelete("users/{id:guid}/sessions")]
+    [HasPermission(Permissions.SessionsRevokeAny)]
+    public async Task<IActionResult> RevokeUserSessions(Guid id, CancellationToken ct) =>
+        Ok(new { revoked = await admin.RevokeUserSessionsAsync(User.GetUserId(), id, null, ct) });
+
+    [HttpDelete("users/{id:guid}/sessions/{sessionId:guid}")]
+    [HasPermission(Permissions.SessionsRevokeAny)]
+    public async Task<IActionResult> RevokeUserSession(Guid id, Guid sessionId, CancellationToken ct) =>
+        Ok(new { revoked = await admin.RevokeUserSessionsAsync(User.GetUserId(), id, sessionId, ct) });
+
     [HttpPost("users/{id:guid}/roles")]
     [HasPermission(Permissions.RolesAssign)]
     public async Task<ActionResult<AdminUserResponse>> AssignRole(Guid id, AssignRoleRequest req, CancellationToken ct) =>

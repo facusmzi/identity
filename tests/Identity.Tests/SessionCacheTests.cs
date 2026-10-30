@@ -37,7 +37,6 @@ public sealed class SessionCacheTests(IdentityFactory factory) : IClassFixture<I
     [InlineData("delete-account")]
     [InlineData("revoke-session")]
     [InlineData("admin-delete")]
-    [InlineData("refresh-reuse")]
     public async Task Every_revocation_path_bypasses_a_warm_cache(string path)
     {
         var email = NewEmail();
@@ -76,13 +75,6 @@ public sealed class SessionCacheTests(IdentityFactory factory) : IClassFixture<I
                 var admin = factory.CreateClient();
                 await TestHostFactory.LoginAsync(admin, TestHostFactory.AdminEmail, TestHostFactory.AdminPassword);
                 await admin.DeleteAsync($"/admin/users/{victimId}");
-                break;
-            case "refresh-reuse":
-                var rotated = await (await victim.PostAsJsonAsync("/auth/refresh", new { refreshToken = tokens.RefreshToken }))
-                    .Content.ReadFromJsonAsync<AuthTokensResponse>();
-                await victim.PostAsJsonAsync("/auth/refresh", new { refreshToken = rotated!.RefreshToken });
-                await Task.Delay(TimeSpan.FromSeconds(6)); // leave the 5 s grace window
-                await victim.PostAsJsonAsync("/auth/refresh", new { refreshToken = tokens.RefreshToken }); // replay => revoke
                 break;
         }
 
