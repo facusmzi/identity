@@ -37,6 +37,17 @@ public static class SecurityConfigurationExtensions
             && (adminPassword.Length < 12 || adminPassword == "Admin12345" || !Regex.IsMatch(adminPassword, PasswordRules.Pattern)))
             errors.Add("Seed:AdminPassword is too weak for this environment (min 12 chars, upper, lower and a digit), or leave Seed empty.");
 
+        foreach (var client in config.GetSection("Clients").GetChildren())
+        {
+            var id = client["Id"];
+            if (client["Secret"] is { Length: > 0 and < 32 })
+                errors.Add($"Clients: '{id}' Secret must be at least 32 random characters.");
+            if (client["WebhookSecret"] is { Length: > 0 and < 32 })
+                errors.Add($"Clients: '{id}' WebhookSecret must be at least 32 random characters.");
+            if (client["WebhookUrl"] is { Length: > 0 } url && !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                errors.Add($"Clients: '{id}' WebhookUrl must use https.");
+        }
+
         if (errors.Count > 0)
             throw new InvalidOperationException(
                 $"Insecure configuration for environment '{env.EnvironmentName}':\n - " + string.Join("\n - ", errors));

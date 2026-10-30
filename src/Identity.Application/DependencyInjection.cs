@@ -20,6 +20,9 @@ public static class DependencyInjection
         services.AddScoped<PasswordPolicy>();
         services.AddScoped<SecondFactor>();
         services.AddScoped<MfaService>();
+        services.AddSingleton<ClientRegistry>();
+        services.AddSingleton<IdentityMetrics>();
+        services.AddScoped<IntrospectionService>();
         return services;
     }
 }

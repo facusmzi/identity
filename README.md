@@ -73,13 +73,48 @@ Dependencias: `Api → Application ← Infrastructure` y `Application → Domain
   `X-CSRF-Token`; si no, `403 CSRF_INVALID`. Otro sitio no puede leer la cookie ni hacer que el navegador mande el
   header. El token cambia en cada refresh. Con header `Authorization` no hace falta (el navegador nunca lo agrega
   solo).
+- **De dónde saca la página el token CSRF**: una cookie `__Host-` es de ese host exacto, así que un frontend en
+  `app.tienda.com` no la ve con `document.cookie` si Identity está en `auth.tienda.com`. Por eso login y refresh lo
+  mandan también en el header de respuesta `X-CSRF-Token` (CORS lo expone solo a los orígenes permitidos), y si la
+  página se recargó y lo perdió, `GET /auth/csrf` lo devuelve.
 - El frontend tiene que estar en el mismo *site* que Identity (por ejemplo `tienda.com` y `auth.tienda.com`), por
   `SameSite=Strict`, y figurar en `Cors:AllowedOrigins` (que habilita credenciales; `*` no se acepta). Las requests
   van con `credentials: "include"`.
+- Lo de arriba lo prueba un Chromium real (Playwright, `BrowserTests`): cookies HttpOnly/Secure/SameSite, tokens
+  invisibles para JavaScript, CSRF y que una página de otro origen no pueda leer nada. Un despliegue real entre
+  subdominios con TLS no se puede reproducir en local; eso queda para probarlo en staging.
 - **Detección de reuso**: un refresh token ya rotado que llega fuera de la ventana se asume robado y se revoca la
   sesión entera (`REFRESH_TOKEN_REUSED`, queda en la auditoría).
 - Las sesiones se leen sin tracking y solo se modifican con UPDATEs atómicos del repositorio (nunca entidades
   trackeadas + `SaveChanges`), para que una copia vieja en memoria no pise una revocación concurrente.
+
+## Clientes (otros servicios que usan Identity)
+
+Cada app que consume Identity se declara en `Clients` (configuración):
+
+```json
+"Clients": [
+  { "Id": "tienda", "Audience": "tienda-api", "Secret": "<32+ caracteres>",
+    "WebhookUrl": "https://tienda.com/identity-events", "WebhookSecret": "<32+ caracteres>" }
+]
+```
+
+- **Audience por cliente**: `POST /auth/login` con `"clientId": "tienda"` emite tokens con `aud=tienda-api`, y los
+  refresh de esa sesión también. Así un token de la tienda no sirve contra otra API que valide su propia audience.
+  Sin `clientId` se usa `Jwt:Audience`. Un `clientId` desconocido da `400 UNKNOWN_CLIENT`.
+- **Introspección** (`POST /auth/introspect`, autenticado con Basic `Id:Secret` del cliente, body `{"token": "..."}`):
+  responde `{ active, sub, sid, aud, exp, roles, permissions, amr }`. Valida firma, vencimiento y **que la sesión
+  siga viva** (con la caché de Redis), y devuelve roles y permisos actuales. Sirve para la API que necesita saber
+  al instante si un usuario fue bloqueado o hizo logout, sin esperar a que venza el access token. Un token emitido
+  para otra audience sale `active: false`.
+- **Webhooks**: si el cliente tiene `WebhookUrl`, recibe `user.deleted`, `user.restored`, `user.locked` y
+  `user.unlocked` (por ejemplo para borrar o congelar los datos de ese usuario en la tienda). Se guardan en
+  `outbox_webhooks` en la misma transacción que la acción y se entregan con reintentos (backoff hasta 1 h, máximo
+  `Outbox:MaxAttempts`). Cuerpo: `{"id","type","occurredAt","data":{"userId"}}`. Headers: `Identity-Event-Id`
+  (para deduplicar: la entrega es *al menos una vez*), `Identity-Event-Type` e
+  `Identity-Signature: t=<unix>,v1=<hex>`, donde `v1 = HMAC-SHA256(WebhookSecret, "<t>.<body>")`. El receptor
+  recalcula la firma sobre el body crudo, la compara en tiempo constante y rechaza `t` con más de 5 min.
+- En producción `Secret` y `WebhookSecret` deben tener 32+ caracteres y `WebhookUrl` ser https, o la API no arranca.
 
 ## Registro, verificación y mails
 
@@ -144,7 +179,12 @@ Dependencias: `Api → Application ← Infrastructure` y `Application → Domain
 - **Headers de seguridad**: `nosniff`, `X-Frame-Options: DENY`, CSP que no permite nada, `Referrer-Policy`,
   `Permissions-Policy`, HSTS fuera de Development y `Cache-Control: no-store` en todo salvo el JWKS.
 - **Bloqueo por cuenta** (Redis): 10 logins fallidos en 15 min bloquean ese email 15 min (`429 ACCOUNT_LOCKED`).
-- **Rate limit por IP** (en memoria, por instancia): 5/min en register, resend y forgot; 10/min en el resto.
+- **Rate limit por IP** (Redis, compartido entre instancias): 5/min en register, resend y forgot; 10/min en el resto
+  (`RateLimiting:*`). `429` con `Retry-After`. `RateLimiting:Distributed=false` lo deja en memoria por instancia.
+- **Si Redis se cae** la API sigue funcionando, degradada y sin esperar timeouts: el rate limit pasa a memoria por
+  instancia, el bloqueo por cuenta deja de contar (falla abierto), las sesiones se validan contra la base y no hay
+  ventana de gracia en el refresh (un refresh concurrente recibe 401, nunca revoca la sesión). Se loguea una
+  advertencia por minuto por cada función afectada y `/health/ready` lo marca.
 - **Arranque seguro**: fuera de `Development`/`Testing` la API no arranca sin clave de firma, sin clave de cifrado,
   sin SMTP o con un admin sembrado débil, y carga las claves al iniciar (una clave ilegible frena el arranque, no
   cada request).
@@ -157,7 +197,7 @@ Dependencias: `Api → Application ← Infrastructure` y `Application → Domain
 - Registrar un email nuevo tarda unos ms más que uno existente (el INSERT); con muchas mediciones se podría inferir.
 - Tras 10 intentos fallidos de verificación, el `429` revela que hay una cuenta pendiente con ese email.
 - El outbox guarda el código/token en claro hasta que se entrega (segundos, salvo que el SMTP esté caído).
-- El rate limit por IP no se comparte entre instancias (el bloqueo por cuenta sí).
+- Mientras Redis está caído no hay bloqueo por cuenta y el rate limit es por instancia.
 - Perder `SecretEncryption:Keys` obliga a todos los usuarios con MFA a configurarlo de nuevo (vía recuperación).
 - El chequeo HIBP manda a un tercero 5 caracteres del hash de cada contraseña nueva; si eso no es aceptable,
   `Hibp:Enabled=false`.
@@ -165,7 +205,28 @@ Dependencias: `Api → Application ← Infrastructure` y `Application → Domain
 ## Retención
 
 Un proceso en segundo plano (`Retention:*`, cada hora) borra físicamente: sesiones terminadas hace más de 30 días,
-mails del outbox entregados o abandonados hace más de 7 días y auditoría de más de 365 días.
+mails y webhooks del outbox entregados o abandonados hace más de 7 días y auditoría de más de 365 días.
+
+## Métricas y trazas (OpenTelemetry)
+
+Se activan al configurar un colector OTLP (`Telemetry__OtlpEndpoint` u `OTEL_EXPORTER_OTLP_ENDPOINT`); sin eso no se
+recolecta nada. Además de las métricas de ASP.NET Core, HttpClient y runtime, el meter `Identity` publica:
+
+| Métrica | Tags |
+| --- | --- |
+| `identity.logins` | `result` (success, invalid_credentials, mfa_required, locked, disabled...) |
+| `identity.mfa.verifications` | `result` |
+| `identity.token.refreshes` | `result` (success, grace, invalid, reused) |
+| `identity.registrations` | `outcome` (created, existing) |
+| `identity.account.lockouts` | — |
+| `identity.password.breach_checks` | `result` (breached, not_breached, unavailable) |
+| `identity.password_hash.duration` (ms) · `identity.password_hash.rejected` | — |
+| `identity.introspections` | `active` |
+| `identity.outbox.pending` (gauge) | `kind` (email, webhook) |
+
+Las trazas cubren requests, llamadas HTTP salientes (HIBP, webhooks) y consultas a Postgres. Alertas útiles: picos de
+`identity.token.refreshes{result=reused}` (tokens robados), `identity.outbox.pending` creciendo (SMTP o webhooks
+caídos) y `identity.password_hash.rejected` (servidor saturado).
 
 ## Levantar en local (Podman)
 
@@ -208,6 +269,8 @@ podman build -t identity-migrator --target migrator .   # bundle de migraciones
 | POST | `/auth/register` · `/auth/verify-email` · `/auth/resend-verification` | — |
 | POST | `/auth/login` · `/auth/login/mfa` · `/auth/refresh` | — |
 | POST | `/auth/forgot-password` · `/auth/reset-password` | — |
+| GET | `/auth/csrf` (token CSRF del modo cookies) | cookie |
+| POST | `/auth/introspect` | Basic (cliente) |
 | POST | `/auth/logout` · `/auth/logout-all` · `/auth/change-password` | Bearer |
 | GET / DELETE | `/auth/me` (DELETE = borrado lógico de tu cuenta, pide contraseña) | Bearer |
 | GET / DELETE | `/sessions` · `/sessions/{id}` | Bearer |
@@ -242,9 +305,15 @@ dotnet test --filter "Category!=Postgres"    # solo los rápidos, sin contenedor
 ```
 
 Los tests de `Postgres/` levantan Postgres y Redis con Testcontainers, que usa Docker o la API compatible de Podman.
-Sin un runtime de contenedores se saltean en local; en CI (`CI=true`) fallan.
+Sin un runtime de contenedores se saltean en local; en CI (`CI=true`) fallan. Lo mismo con `BrowserTests` si no está
+Chromium; para instalarlo después de compilar:
+
+```powershell
+pwsh tests/Identity.Tests/bin/Debug/net10.0/playwright.ps1 install chromium
+```
 
 ## CI
 
-`.github/workflows/ci.yml`: build, chequeo de migraciones, todos los tests (incluidos los de Postgres) y build de
-las dos imágenes.
+`.github/workflows/ci.yml`: build, chequeo de migraciones, instalación de Chromium, todos los tests (incluidos los de
+Postgres y navegador) y build de las dos imágenes. `.github/dependabot.yml` abre PRs semanales para paquetes NuGet
+(agrupados por familia), actions e imágenes base del `Containerfile`.

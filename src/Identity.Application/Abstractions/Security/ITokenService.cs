@@ -10,11 +10,18 @@ public sealed record AccessTokenRequest(
     string Email,
     IReadOnlyList<string> Roles,
     IReadOnlyList<string> Permissions,
-    IReadOnlyList<string> AuthenticationMethods);
+    IReadOnlyList<string> AuthenticationMethods,
+    string? Audience = null);
+
+/// <summary>What a valid access token says (signature, issuer, lifetime and audience already checked).</summary>
+public sealed record AccessTokenClaims(Guid UserId, Guid SessionId, string Audience, DateTime ExpiresAt, IReadOnlyList<string> AuthenticationMethods);
 
 public interface ITokenService
 {
     (string Token, DateTime ExpiresAt) CreateAccessToken(AccessTokenRequest request);
+
+    /// <summary>Null when the token is not one of ours or is expired/tampered (any configured audience is accepted).</summary>
+    Task<AccessTokenClaims?> ReadAccessTokenAsync(string token);
 
     /// <summary>
     /// Opaque refresh token "{sessionId}.{random}". Carrying the session id lets a reused (already rotated)

@@ -26,13 +26,19 @@ public static class SessionCookies
     public const string Csrf = "__Host-identity-csrf";
     public const string CsrfHeader = "X-CSRF-Token";
 
+    /// <summary>
+    /// Sets the three cookies. The CSRF token is ALSO sent in the <c>X-CSRF-Token</c> response header: a __Host-
+    /// cookie belongs to this exact host, so a frontend on another host of the same site (app.example.com talking
+    /// to auth.example.com) cannot read it with document.cookie. CORS exposes that header only to allowed origins.
+    /// </summary>
     public static void Write(HttpResponse response, AuthTokensResponse tokens)
     {
         response.Cookies.Append(Access, tokens.AccessToken, Options(httpOnly: true, tokens.AccessExpiresAt));
         response.Cookies.Append(Refresh, tokens.RefreshToken, Options(httpOnly: true, tokens.RefreshExpiresAt));
-        // A new CSRF token per login/refresh; the page reads it from document.cookie.
-        response.Cookies.Append(Csrf, Base64UrlEncoder.Encode(RandomNumberGenerator.GetBytes(32)),
-            Options(httpOnly: false, tokens.RefreshExpiresAt));
+
+        var csrf = Base64UrlEncoder.Encode(RandomNumberGenerator.GetBytes(32)); // new one per login/refresh
+        response.Cookies.Append(Csrf, csrf, Options(httpOnly: false, tokens.RefreshExpiresAt));
+        response.Headers[CsrfHeader] = csrf;
     }
 
     public static void Clear(HttpResponse response)

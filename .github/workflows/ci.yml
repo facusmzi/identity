@@ -26,6 +26,10 @@ jobs:
         # Note: for dotnet-ef, -c means --context, so the configuration has to be spelled out.
         run: dotnet ef migrations has-pending-model-changes -p src/Identity.Infrastructure -s src/Identity.Api --configuration Release --no-build
 
+      # Chromium for the real-browser cookie tests (they are mandatory when CI is set).
+      - name: Install Playwright Chromium
+        run: pwsh tests/Identity.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+
       # Includes the Postgres/Redis suite (Testcontainers uses the runner's Docker).
       - name: Test
         run: dotnet test --no-build -c Release --logger trx --results-directory TestResults

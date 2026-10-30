@@ -17,6 +17,9 @@ public class Session : BaseEntity
     public string? UserAgent { get; set; }
     public LoginMethod LoginMethod { get; set; } = LoginMethod.Email;
 
+    /// <summary>The app the session belongs to (Clients:Id); decides the audience of its access tokens.</summary>
+    public string? ClientId { get; set; }
+
     /// <summary>Sliding expiry: every refresh pushes it forward, but never past <see cref="AbsoluteExpiresAt"/>.</summary>
     public DateTime ExpiresAt { get; set; }
 

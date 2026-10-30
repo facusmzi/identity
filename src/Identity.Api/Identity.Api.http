@@ -156,3 +156,19 @@ Content-Type: application/json
 ### Refresh por cookie (sin body). Requiere el valor de la cookie __Host-identity-csrf en el header
 POST {{base}}/auth/refresh
 X-CSRF-Token: pegar-valor-de-la-cookie-csrf
+
+### Token CSRF actual (si la página se recargó y lo perdió)
+GET {{base}}/auth/csrf
+
+### Login para un cliente registrado en Clients: el token sale con aud = la audience de ese cliente
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "{{email}}", "password": "Passw0rd!", "clientId": "tienda" }
+
+### Introspección (desde el backend del cliente, con su Id:Secret en Basic)
+POST {{base}}/auth/introspect
+Authorization: Basic tienda:secreto-del-cliente-de-32-caracteres-o-mas
+Content-Type: application/json
+
+{ "token": "{{accessToken}}" }

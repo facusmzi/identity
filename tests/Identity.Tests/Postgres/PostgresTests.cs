@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.AspNetCore.Hosting;
 using System.Net.Http.Json;
 using Microsoft.EntityFrameworkCore;
 using Identity.Application.Dtos;
@@ -85,6 +86,32 @@ public sealed class PostgresTests(PostgresFixture fixture)
         await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => factory.DispatchEmailsAsync()));
 
         Assert.All(emails, e => Assert.Equal(1, factory.Emails.CodesSentTo(e)));
+    }
+
+    [SkippableFact]
+    public async Task Per_ip_limits_are_shared_by_every_instance()
+    {
+        var factory = fixture.Require();
+        // Two independent API instances (separate in-memory state), same Redis, a limit of 3 per minute.
+        using var instanceA = new PostgresIdentityFactory(fixture.PostgresConnection, fixture.RedisConnection, b => b.UseSetting("RateLimiting:StrictPermitLimit", "3"));
+        using var instanceB = new PostgresIdentityFactory(fixture.PostgresConnection, fixture.RedisConnection, b => b.UseSetting("RateLimiting:StrictPermitLimit", "3"));
+
+        async Task<HttpStatusCode> Forgot(Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> f) =>
+            (await f.CreateClient().PostAsJsonAsync("/auth/forgot-password", new { email = NewEmail() })).StatusCode;
+
+        // Until an instance's Redis connection is up it counts locally (by design); wait for both to be ready.
+        foreach (var instance in new[] { instanceA, instanceB })
+        {
+            var http = instance.CreateClient();
+            for (var i = 0; i < 50 && (await http.GetAsync("/health/ready")).StatusCode != HttpStatusCode.OK; i++)
+                await Task.Delay(100);
+        }
+
+        // Fresh minute window so earlier tests don't eat into the budget.
+        await Task.Delay(TimeSpan.FromMilliseconds(60_000 - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() % 60_000 + 50));
+        var codes = new[] { await Forgot(instanceA), await Forgot(instanceB), await Forgot(instanceA), await Forgot(instanceB) };
+
+        Assert.Equal(new[] { HttpStatusCode.OK, HttpStatusCode.OK, HttpStatusCode.OK, HttpStatusCode.TooManyRequests }, codes);
     }
 
     [SkippableFact]

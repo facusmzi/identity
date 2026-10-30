@@ -62,6 +62,7 @@ internal sealed class MfaChallengeConfiguration : IEntityTypeConfiguration<MfaCh
         b.Property(c => c.TokenHash).HasMaxLength(64).IsRequired();
         b.Property(c => c.IpAddress).HasMaxLength(64);
         b.Property(c => c.UserAgent).HasMaxLength(512);
+        b.Property(c => c.ClientId).HasMaxLength(64);
         b.HasIndex(c => c.TokenHash).IsUnique();
         b.HasIndex(c => c.ExpiresAt);
         b.HasOne<User>().WithMany().HasForeignKey(c => c.UserId).OnDelete(DeleteBehavior.Cascade);
@@ -79,6 +80,7 @@ internal sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
         b.Property(s => s.UserAgent).HasMaxLength(512);
         b.Property(s => s.LoginMethod).HasConversion<string>().HasMaxLength(32);
         b.Property(s => s.RevokedReason).HasConversion<string>().HasMaxLength(32);
+        b.Property(s => s.ClientId).HasMaxLength(64);
         b.HasIndex(s => s.RefreshTokenHash).IsUnique();
         b.HasIndex(s => new { s.UserId, s.RevokedAt });
         b.HasOne(s => s.User).WithMany(u => u.Sessions).HasForeignKey(s => s.UserId).OnDelete(DeleteBehavior.Cascade);
@@ -137,5 +139,19 @@ internal sealed class OutboxEmailConfiguration : IEntityTypeConfiguration<Outbox
         b.Property(m => m.Payload).HasMaxLength(4000);
         b.Property(m => m.LastError).HasMaxLength(1000);
         b.HasIndex(m => new { m.SentAt, m.FailedAt, m.NextAttemptAt });
+    }
+}
+
+internal sealed class OutboxWebhookConfiguration : IEntityTypeConfiguration<OutboxWebhook>
+{
+    public void Configure(EntityTypeBuilder<OutboxWebhook> b)
+    {
+        b.ToTable("outbox_webhooks");
+        b.Property(w => w.Id).ValueGeneratedNever();
+        b.Property(w => w.ClientId).HasMaxLength(64).IsRequired();
+        b.Property(w => w.EventType).HasMaxLength(64).IsRequired();
+        b.Property(w => w.Payload).HasMaxLength(2000).IsRequired();
+        b.Property(w => w.LastError).HasMaxLength(1000);
+        b.HasIndex(w => new { w.SentAt, w.FailedAt, w.NextAttemptAt });
     }
 }

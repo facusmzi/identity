@@ -186,6 +186,8 @@ public sealed class OutboxDispatcher(
             {
                 await using var scope = scopes.CreateAsyncScope();
                 await scope.ServiceProvider.GetRequiredService<OutboxProcessor>().DispatchPendingAsync(stoppingToken);
+                await scope.ServiceProvider.GetRequiredService<OutboxBacklog>()
+                    .RefreshAsync(scope.ServiceProvider.GetRequiredService<AppDbContext>(), stoppingToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

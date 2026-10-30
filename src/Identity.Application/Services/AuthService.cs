@@ -24,9 +24,12 @@ public sealed class AuthService(
     ILoginThrottle loginThrottle,
     ISessionCache sessionCache,
     IEmailOutbox outbox,
+    IAccountEvents events,
     IMfaRepository mfa,
     SecondFactor secondFactor,
     PasswordPolicy passwordPolicy,
+    ClientRegistry clients,
+    IdentityMetrics metrics,
     AuditTrail audit,
     TimeProvider clock,
     IOptions<AuthOptions> options,
@@ -54,6 +57,7 @@ public sealed class AuthService(
         var existing = await users.GetByEmailAsync(email, ct);
         if (existing is not null)
         {
+            metrics.Registration("existing");
             // Verified: the owner can log in or reset the password; say nothing (only persist audit entries).
             if (existing.EmailVerified)
             {
@@ -80,11 +84,13 @@ public sealed class AuthService(
         try
         {
             await uow.SaveChangesAsync(ct);
+            metrics.Registration("created");
         }
         catch (UniqueConstraintViolationException)
         {
             // A concurrent request registered the same email between our read and our insert.
             // Its registration wins; answer like any other "email already registered" case.
+            metrics.Registration("existing");
         }
     }
 
@@ -145,9 +151,13 @@ public sealed class AuthService(
     /// </summary>
     public async Task<LoginResponse> LoginAsync(LoginRequest req, ClientMeta meta, CancellationToken ct = default)
     {
+        var client = clients.Resolve(req.ClientId); // unknown client: 400 before touching the account
         var email = NormalizeEmail(req.Email);
         if (await loginThrottle.GetLockoutAsync(email, ct) is { } remaining)
+        {
+            metrics.Login("locked");
             throw new TooManyRequestsException("Too many failed logins, account temporarily locked", "ACCOUNT_LOCKED", remaining);
+        }
 
         var user = await users.GetByEmailAsync(email, ct);
         var valid = user?.PasswordHash is null
@@ -159,6 +169,8 @@ public sealed class AuthService(
             var locked = await loginThrottle.RegisterFailureAsync(email, ct);
             audit.Record(AuditActions.LoginFailed, null, user?.Id);
             if (locked) audit.Record(AuditActions.AccountLocked, null, user?.Id);
+            if (locked) metrics.Lockout();
+            metrics.Login("invalid_credentials");
             await uow.SaveChangesAsync(ct);
             throw new UnauthorizedException("Invalid credentials", "INVALID_CREDENTIALS");
         }
@@ -167,10 +179,16 @@ public sealed class AuthService(
 
         // Only revealed to someone who knows the password, so it does not help enumerate accounts.
         if (user!.LockedAt is not null)
+        {
+            metrics.Login("disabled");
             throw new ForbiddenException("This account has been disabled. Contact support.", "ACCOUNT_DISABLED");
+        }
 
         if (!user.EmailVerified)
+        {
+            metrics.Login("unverified");
             throw new ForbiddenException("Email not verified", "EMAIL_NOT_VERIFIED");
+        }
 
         // Hashes made with weaker parameters are upgraded transparently the next time the password is known.
         if (passwordHasher.NeedsRehash(user.PasswordHash!))
@@ -187,13 +205,16 @@ public sealed class AuthService(
                 ExpiresAt = Now.AddMinutes(_mfaOpt.ChallengeMinutes),
                 IpAddress = meta.IpAddress,
                 UserAgent = Truncate(meta.UserAgent, 512),
+                ClientId = client?.Id,
             });
             await uow.SaveChangesAsync(ct);
+            metrics.Login("mfa_required");
             return LoginResponse.Mfa(mfaToken);
         }
 
         audit.Record(AuditActions.LoginSucceeded, user.Id, user.Id);
-        return LoginResponse.From(await CreateSessionAsync(user, LoginMethod.Email, meta, ct));
+        metrics.Login("success");
+        return LoginResponse.From(await CreateSessionAsync(user, LoginMethod.Email, meta, client?.Id, ct));
     }
 
     /// <summary>
@@ -220,6 +241,8 @@ public sealed class AuthService(
             var locked = await loginThrottle.RegisterFailureAsync(user.Email, ct);
             audit.Record(AuditActions.MfaFailed, null, user.Id, new { operation = "login" });
             if (locked) audit.Record(AuditActions.AccountLocked, null, user.Id);
+            if (locked) metrics.Lockout();
+            metrics.Mfa("failure");
             await uow.SaveChangesAsync(ct);
             throw MfaInvalid();
         }
@@ -228,13 +251,14 @@ public sealed class AuthService(
         await loginThrottle.ResetAsync(user.Email, ct);
 
         audit.Record(AuditActions.LoginSucceeded, user.Id, user.Id, new { mfa = usedTotp ? "totp" : "recovery_code" });
+        metrics.Mfa(usedTotp ? "totp" : "recovery_code");
         if (usedRecovery)
         {
             audit.Record(AuditActions.MfaRecoveryCodeUsed, user.Id, user.Id);
             outbox.EnqueueSecurityNotice(user.Email, "A recovery code was used",
                 "One of your two-factor recovery codes was just used to sign in. If this wasn't you, reset your password now.");
         }
-        return await CreateSessionAsync(user, LoginMethod.EmailMfa, meta, ct);
+        return await CreateSessionAsync(user, LoginMethod.EmailMfa, meta, challenge.ClientId, ct);
     }
 
     public async Task<AuthTokensResponse> RefreshAsync(RefreshRequest req, ClientMeta meta, CancellationToken ct = default)
@@ -243,7 +267,10 @@ public sealed class AuthService(
         var presentedHash = tokens.Hash(req.RefreshToken);
 
         if (await graceStore.GetAsync(presentedHash, ct) is { } cached)
+        {
+            metrics.Refresh("grace");
             return cached;
+        }
 
         if (!tokens.TryGetSessionId(req.RefreshToken, out var sessionId))
             throw InvalidRefreshToken();
@@ -266,10 +293,11 @@ public sealed class AuthService(
         if (!rotated)
             return await WaitForGraceAsync(presentedHash, ct) ?? throw InvalidRefreshToken();
 
-        var (accessToken, accessExpiresAt) = await CreateAccessTokenAsync(session.UserId, session.Id, session.User.Email, session.LoginMethod, ct);
+        var (accessToken, accessExpiresAt) = await CreateAccessTokenAsync(session.UserId, session.Id, session.User.Email, session.LoginMethod, session.ClientId, ct);
         var result = new AuthTokensResponse(accessToken, refreshToken, accessExpiresAt, refreshExpiresAt);
 
         await graceStore.SetAsync(presentedHash, result, TimeSpan.FromSeconds(_opt.RefreshGraceSeconds), ct);
+        metrics.Refresh("success");
         return result;
     }
 
@@ -372,6 +400,7 @@ public sealed class AuthService(
             throw new BadRequestException("You are the last admin; promote someone else first", "LAST_ADMIN");
 
         audit.Record(AuditActions.AccountDeleted, userId, userId);
+        events.Publish(AccountEventTypes.UserDeleted, userId);
         await uow.ExecuteInTransactionAsync(async t =>
         {
             await sessions.RevokeAllForUserAsync(userId, Now, RevocationReason.AccountDeleted, ct: t);
@@ -404,6 +433,7 @@ public sealed class AuthService(
         await sessionCache.InvalidateUserAsync(session.UserId, ct);
         logger.LogWarning("Refresh token reuse detected for session {SessionId} of user {UserId}; session revoked",
             session.Id, session.UserId);
+        metrics.Refresh("reused");
         throw new UnauthorizedException("Refresh token reuse detected, session revoked", "REFRESH_TOKEN_REUSED");
     }
 
@@ -418,13 +448,15 @@ public sealed class AuthService(
         return null;
     }
 
-    private async Task<AuthTokensResponse> CreateSessionAsync(User user, LoginMethod method, ClientMeta meta, CancellationToken ct)
+    private async Task<AuthTokensResponse> CreateSessionAsync(
+        User user, LoginMethod method, ClientMeta meta, string? clientId, CancellationToken ct)
     {
         var absolute = Now.AddDays(Math.Max(_opt.SessionAbsoluteDays, 1));
         var session = new Session
         {
             UserId = user.Id,
             LoginMethod = method,
+            ClientId = clientId,
             IpAddress = meta.IpAddress,
             UserAgent = Truncate(meta.UserAgent, 512),
             AbsoluteExpiresAt = absolute,
@@ -436,16 +468,17 @@ public sealed class AuthService(
         await sessions.AddAsync(session, ct);
         await uow.SaveChangesAsync(ct);
 
-        var (accessToken, accessExpiresAt) = await CreateAccessTokenAsync(user.Id, session.Id, user.Email, method, ct);
+        var (accessToken, accessExpiresAt) = await CreateAccessTokenAsync(user.Id, session.Id, user.Email, method, clientId, ct);
         return new AuthTokensResponse(accessToken, refreshToken, accessExpiresAt, session.ExpiresAt);
     }
 
     private async Task<(string Token, DateTime ExpiresAt)> CreateAccessTokenAsync(
-        Guid userId, Guid sessionId, string email, LoginMethod method, CancellationToken ct)
+        Guid userId, Guid sessionId, string email, LoginMethod method, string? clientId, CancellationToken ct)
     {
         var access = await users.GetAccessAsync(userId, ct);
         string[] amr = method == LoginMethod.EmailMfa ? ["pwd", "mfa"] : ["pwd"];
-        return tokens.CreateAccessToken(new AccessTokenRequest(userId, sessionId, email, access.Roles, access.Permissions, amr));
+        return tokens.CreateAccessToken(new AccessTokenRequest(
+            userId, sessionId, email, access.Roles, access.Permissions, amr, clients.Find(clientId)?.Audience));
     }
 
     private static UnauthorizedException MfaInvalid() => new("The verification code is invalid or the login expired", "MFA_INVALID");
@@ -507,8 +540,11 @@ public sealed class AuthService(
         return $"{_opt.PasswordResetUrl}{separator}email={Uri.EscapeDataString(email)}&token={Uri.EscapeDataString(token)}";
     }
 
-    private static UnauthorizedException InvalidRefreshToken() =>
-        new("Invalid or expired refresh token", "INVALID_REFRESH_TOKEN");
+    private UnauthorizedException InvalidRefreshToken()
+    {
+        metrics.Refresh("invalid");
+        return new("Invalid or expired refresh token", "INVALID_REFRESH_TOKEN");
+    }
 
     private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
 

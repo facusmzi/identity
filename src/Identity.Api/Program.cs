@@ -18,7 +18,8 @@ builder.Services
     .AddAuthRateLimiting(builder.Configuration)
     .AddTrustedProxies(builder.Configuration)
     .AddFrontendCors(builder.Configuration)
-    .AddIdentityHealthChecks();
+    .AddIdentityHealthChecks()
+    .AddIdentityTelemetry(builder.Configuration);
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IRequestContext, HttpRequestContext>();
@@ -34,6 +35,8 @@ var app = builder.Build();
 // Load the keys now: a missing or unreadable key must stop the startup, not fail every request later.
 app.Services.GetRequiredService<SigningKeyProvider>();
 app.Services.GetRequiredService<Identity.Application.Abstractions.Security.ISecretProtector>();
+// Start connecting to Redis now, so shared limits and the session cache are live by the first request.
+app.Services.GetRequiredService<StackExchange.Redis.IConnectionMultiplexer>();
 await DbInitializer.InitializeAsync(app.Services);
 
 // `dotnet Identity.Api.dll seed-admin <email>` (password from IDENTITY_ADMIN_PASSWORD or stdin): creates or

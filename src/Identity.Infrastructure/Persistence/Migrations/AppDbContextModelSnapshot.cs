@@ -77,6 +77,11 @@ namespace Identity.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<string>("ClientId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("client_id");
+
                     b.Property<DateTime?>("ConsumedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("consumed_at");
@@ -258,6 +263,11 @@ namespace Identity.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("AbsoluteExpiresAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("absolute_expires_at");
+
+                    b.Property<string>("ClientId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("client_id");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -538,6 +548,68 @@ namespace Identity.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("ix_outbox_emails_sent_at_failed_at_next_attempt_at");
 
                     b.ToTable("outbox_emails", (string)null);
+                });
+
+            modelBuilder.Entity("Identity.Infrastructure.Messaging.OutboxWebhook", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempts");
+
+                    b.Property<string>("ClientId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("client_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("event_type");
+
+                    b.Property<DateTime?>("FailedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("failed_at");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("last_error");
+
+                    b.Property<DateTime?>("LockedUntil")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("locked_until");
+
+                    b.Property<DateTime>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("payload");
+
+                    b.Property<DateTime?>("SentAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("sent_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_outbox_webhooks");
+
+                    b.HasIndex("SentAt", "FailedAt", "NextAttemptAt")
+                        .HasDatabaseName("ix_outbox_webhooks_sent_at_failed_at_next_attempt_at");
+
+                    b.ToTable("outbox_webhooks", (string)null);
                 });
 
             modelBuilder.Entity("Identity.Domain.Entities.MfaChallenge", b =>

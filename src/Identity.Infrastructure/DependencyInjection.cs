@@ -84,6 +84,13 @@ public static class DependencyInjection
         services.AddScoped<OutboxProcessor>();
         services.AddHostedService<OutboxDispatcher>();
 
+        // Account events for client webhooks: same outbox pattern, signed HMAC-SHA256.
+        services.AddSingleton<OutboxBacklog>();
+        services.AddScoped<IAccountEvents, EfAccountEvents>();
+        services.AddScoped<WebhookProcessor>();
+        services.AddHttpClient(WebhookProcessor.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(10));
+        services.AddHostedService<WebhookDispatcher>();
+
         // Retention
         services.AddScoped<RetentionCleanup>();
         services.AddHostedService<RetentionCleanupService>();

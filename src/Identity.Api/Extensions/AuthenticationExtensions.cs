@@ -19,14 +19,14 @@ public static class AuthenticationExtensions
 
         // Configured from DI so it uses the same keys that sign the tokens (and that the JWKS publishes).
         services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
-            .Configure<SigningKeyProvider, IOptions<JwtOptions>>((options, keys, jwtOptions) =>
+            .Configure<SigningKeyProvider, IOptions<JwtOptions>, ClientRegistry>((options, keys, jwtOptions, clients) =>
             {
                 var jwt = jwtOptions.Value;
                 options.MapInboundClaims = false;
                 options.TokenValidationParameters = new TokenValidationParameters
                 {
                     ValidIssuer = jwt.Issuer,
-                    ValidAudience = jwt.Audience,
+                    ValidAudiences = [jwt.Audience, .. clients.Audiences],
                     IssuerSigningKeys = keys.Keys,
                     ValidAlgorithms = [SecurityAlgorithms.RsaSha256],
                     ClockSkew = TimeSpan.FromSeconds(30),

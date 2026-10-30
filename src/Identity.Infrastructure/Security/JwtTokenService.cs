@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using Identity.Application.Abstractions.Security;
+using Identity.Application.Services;
 
 namespace Identity.Infrastructure.Security;
 
@@ -41,7 +42,7 @@ public sealed class SigningKeyOptions
 }
 
 /// <summary>RS256 access tokens signed with the active key from <see cref="SigningKeyProvider"/>.</summary>
-public sealed class JwtTokenService(IOptions<JwtOptions> options, SigningKeyProvider keys, TimeProvider clock) : ITokenService
+public sealed class JwtTokenService(IOptions<JwtOptions> options, SigningKeyProvider keys, ClientRegistry clients, TimeProvider clock) : ITokenService
 {
     private readonly JwtOptions _opt = options.Value;
     private readonly JsonWebTokenHandler _handler = new();
@@ -72,7 +73,7 @@ public sealed class JwtTokenService(IOptions<JwtOptions> options, SigningKeyProv
         var token = _handler.CreateToken(new SecurityTokenDescriptor
         {
             Issuer = _opt.Issuer,
-            Audience = _opt.Audience,
+            Audience = request.Audience ?? _opt.Audience,
             IssuedAt = now,
             NotBefore = now,
             Expires = expires,
@@ -82,6 +83,38 @@ public sealed class JwtTokenService(IOptions<JwtOptions> options, SigningKeyProv
 
         return (token, expires);
     }
+
+    public async Task<AccessTokenClaims?> ReadAccessTokenAsync(string token)
+    {
+        var result = await _handler.ValidateTokenAsync(token, ValidationParameters());
+        if (!result.IsValid || result.ClaimsIdentity.FindFirst("typ")?.Value != "access") return null;
+
+        var identity = result.ClaimsIdentity;
+        if (!Guid.TryParse(identity.FindFirst(JwtRegisteredClaimNames.Sub)?.Value, out var userId)
+            || !Guid.TryParse(identity.FindFirst(JwtRegisteredClaimNames.Sid)?.Value, out var sessionId)
+            || result.SecurityToken is not JsonWebToken jwt)
+            return null;
+
+        return new AccessTokenClaims(userId, sessionId, jwt.Audiences.FirstOrDefault() ?? "", jwt.ValidTo,
+            identity.FindAll(JwtRegisteredClaimNames.Amr).Select(c => c.Value).ToList());
+    }
+
+    /// <summary>Same rules the API's JwtBearer applies: our keys, our issuer, RS256 only, any known audience.</summary>
+    public TokenValidationParameters ValidationParameters() => new()
+    {
+        ValidIssuer = _opt.Issuer,
+        ValidAudiences = [_opt.Audience, .. clients.Audiences],
+        IssuerSigningKeys = keys.Keys,
+        ValidAlgorithms = [SecurityAlgorithms.RsaSha256],
+        ClockSkew = TimeSpan.FromSeconds(30),
+        NameClaimType = JwtRegisteredClaimNames.Sub,
+        RoleClaimType = AccessClaims.Role,
+        LifetimeValidator = (notBefore, expires, _, p) =>
+        {
+            var now = clock.GetUtcNow().UtcDateTime;
+            return (notBefore is null || notBefore <= now + p.ClockSkew) && expires is not null && expires > now - p.ClockSkew;
+        },
+    };
 
     public string GenerateRefreshToken(Guid sessionId) => $"{sessionId:N}.{GenerateOpaqueToken()}";
 

@@ -44,7 +44,7 @@ public static class OperationsExtensions
             policy.WithOrigins(origins)
                 .WithMethods("GET", "POST", "PUT", "DELETE")
                 .WithHeaders("Authorization", "Content-Type", SessionCookies.CsrfHeader)
-                .WithExposedHeaders("Retry-After")
+                .WithExposedHeaders("Retry-After", SessionCookies.CsrfHeader)
                 .AllowCredentials()
                 .SetPreflightMaxAge(TimeSpan.FromHours(1));
         }));

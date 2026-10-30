@@ -71,6 +71,17 @@ public sealed class AuthController(AuthService auth) : ControllerBase
         return SessionCookies.WithoutSecrets(tokens);
     }
 
+    /// <summary>
+    /// The current CSRF token, for a page that was reloaded and lost it from memory. Only readable by the origins
+    /// allowed in CORS (other sites can trigger the request but cannot see the answer).
+    /// </summary>
+    [AllowAnonymous]
+    [HttpGet("csrf")]
+    public IActionResult Csrf() =>
+        Request.Cookies.TryGetValue(SessionCookies.Csrf, out var token) && !string.IsNullOrEmpty(token)
+            ? Ok(new { csrfToken = token })
+            : Unauthorized();
+
     /// <summary>Bearer clients send <c>refreshToken</c>; browsers send nothing and the session cookie is used.</summary>
     [AllowAnonymous]
     [HttpPost("refresh")]

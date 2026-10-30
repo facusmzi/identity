@@ -1,4 +1,5 @@
 using Identity.Domain.Enums;
+using Identity.Application.Abstractions.Messaging;
 using Identity.Application.Abstractions.Persistence;
 using Identity.Application.Abstractions.Security;
 using Identity.Application.Common;
@@ -25,6 +26,7 @@ public sealed class AdminService(
     IUnitOfWork uow,
     AuditTrail audit,
     ISessionCache sessionCache,
+    IAccountEvents events,
     TimeProvider clock)
 {
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
@@ -168,6 +170,7 @@ public sealed class AdminService(
         await EnsureActorHoldsAsync(actingUserId, user.EffectivePermissions(), ct);
 
         audit.Record(AuditActions.AdminUserDeleted, actingUserId, userId);
+        events.Publish(AccountEventTypes.UserDeleted, userId);
         await uow.ExecuteInTransactionAsync(async t =>
         {
             await sessions.RevokeAllForUserAsync(userId, Now, RevocationReason.AdminDeleted, ct: t);
@@ -187,6 +190,7 @@ public sealed class AdminService(
 
         users.Restore(user);
         audit.Record(AuditActions.AdminUserRestored, actingUserId, userId);
+        events.Publish(AccountEventTypes.UserRestored, userId);
         await uow.SaveChangesAsync(ct);
         return user.ToAdminResponse();
     }
@@ -206,6 +210,7 @@ public sealed class AdminService(
 
         user.LockedAt = Now;
         audit.Record(AuditActions.AdminUserLocked, actingUserId, userId);
+        events.Publish(AccountEventTypes.UserLocked, userId);
         await uow.ExecuteInTransactionAsync(async t =>
         {
             await uow.SaveChangesAsync(t);
@@ -223,6 +228,7 @@ public sealed class AdminService(
 
         user.LockedAt = null;
         audit.Record(AuditActions.AdminUserUnlocked, actingUserId, userId);
+        events.Publish(AccountEventTypes.UserUnlocked, userId);
         await uow.SaveChangesAsync(ct);
         return user.ToAdminResponse();
     }

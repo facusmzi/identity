@@ -25,7 +25,8 @@ public sealed record ResendVerificationRequest([Required, EmailAddress, MaxLengt
 public sealed record LoginRequest(
     [Required, EmailAddress, MaxLength(254)] string Email,
     [Required, MaxLength(PasswordRules.MaxLength)] string Password,
-    bool UseCookies = false);
+    bool UseCookies = false,
+    [MaxLength(64)] string? ClientId = null);
 
 /// <summary>The refresh token goes in the body (bearer clients) or comes from the session cookie (browsers).</summary>
 public sealed record RefreshRequest([MaxLength(256)] string? RefreshToken);

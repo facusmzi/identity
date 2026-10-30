@@ -32,6 +32,9 @@ public sealed class AppExceptionHandler(IProblemDetailsService problemDetails) :
         if (retryAfter is { } wait)
             httpContext.Response.Headers.RetryAfter = ((int)Math.Ceiling(Math.Max(wait.TotalSeconds, 1))).ToString();
 
+        if (app is UnauthorizedException { Code: "INVALID_CLIENT" })
+            httpContext.Response.Headers.WWWAuthenticate = "Basic realm=\"identity\"";
+
         httpContext.Response.StatusCode = status;
         var problem = new ProblemDetails { Status = status, Title = app.Message };
         if (app.Code is not null) problem.Extensions["code"] = app.Code;

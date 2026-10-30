@@ -1,9 +1,11 @@
+using System.Diagnostics.Metrics;
 using System.Security.Cryptography;
 using System.Text;
 using Konscious.Security.Cryptography;
 using Microsoft.Extensions.Options;
 using Identity.Application.Abstractions.Security;
 using Identity.Application.Common;
+using Identity.Application.Services;
 
 namespace Identity.Infrastructure.Security;
 
@@ -32,12 +34,23 @@ public sealed class Argon2PasswordHasher : IPasswordHasher, IDisposable
     private readonly PasswordHashingOptions _opt;
     private readonly SemaphoreSlim _slots;
     private readonly string _dummyHash;
+    private readonly Histogram<double>? _duration;
+    private readonly Counter<long>? _rejected;
 
-    public Argon2PasswordHasher(IOptions<PasswordHashingOptions> options)
+    /// <param name="meterFactory">Optional (null in unit tests): exports hash duration and saturation rejections.</param>
+    public Argon2PasswordHasher(IOptions<PasswordHashingOptions> options, IMeterFactory? meterFactory = null)
     {
         _opt = options.Value;
         _slots = new SemaphoreSlim(Math.Max(1, _opt.MaxConcurrent));
         _dummyHash = Encode(RandomNumberGenerator.GetBytes(SaltSize), RandomNumberGenerator.GetBytes(HashSize));
+
+        if (meterFactory?.Create(IdentityMetrics.MeterName) is { } meter)
+        {
+            _duration = meter.CreateHistogram<double>("identity.password_hash.duration", "ms",
+                "Time to compute one Argon2 hash (tune MemoryKb/Iterations with it)");
+            _rejected = meter.CreateCounter<long>("identity.password_hash.rejected",
+                description: "Requests refused with 503 because MaxConcurrent hashes were already running");
+        }
     }
 
     public async Task<string> HashAsync(string password, CancellationToken ct = default)
@@ -83,7 +96,11 @@ public sealed class Argon2PasswordHasher : IPasswordHasher, IDisposable
         string password, byte[] salt, int memoryKb, int iterations, int parallelism, int size, CancellationToken ct)
     {
         if (!await _slots.WaitAsync(TimeSpan.FromSeconds(_opt.QueueTimeoutSeconds), ct))
+        {
+            _rejected?.Add(1);
             throw new ServiceUnavailableException("Server busy, try again shortly", "BUSY", TimeSpan.FromSeconds(5));
+        }
+
         try
         {
             using var argon = new Argon2id(Encoding.UTF8.GetBytes(password))
@@ -93,7 +110,10 @@ public sealed class Argon2PasswordHasher : IPasswordHasher, IDisposable
                 Iterations = iterations,
                 DegreeOfParallelism = parallelism,
             };
-            return await argon.GetBytesAsync(size);
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            var bytes = await argon.GetBytesAsync(size);
+            _duration?.Record(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            return bytes;
         }
         finally
         {

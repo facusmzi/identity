@@ -40,7 +40,7 @@ public sealed class RetentionCleanup(
         var purgedSessions = await sessions.PurgeEndedAsync(now.AddDays(-_opt.EndedSessionDays), ct);
 
         var outboxBefore = now.AddDays(-_opt.OutboxDays);
-        var purgedOutbox = await PurgeOutboxAsync(outboxBefore, ct);
+        var purgedOutbox = await PurgeOutboxAsync(outboxBefore, ct) + await PurgeWebhooksAsync(outboxBefore, ct);
 
         var purgedAudit = await audit.PurgeOlderThanAsync(now.AddDays(-_opt.AuditDays), ct);
         await mfa.PurgeChallengesAsync(now.AddDays(-1), ct);
@@ -53,6 +53,10 @@ public sealed class RetentionCleanup(
     // Retention purge (sanctioned hard delete).
     private Task<int> PurgeOutboxAsync(DateTime before, CancellationToken ct) =>
         db.OutboxEmails.Where(m => m.SentAt < before || m.FailedAt < before).ExecuteDeleteAsync(ct);
+
+    // Retention purge (sanctioned hard delete).
+    private Task<int> PurgeWebhooksAsync(DateTime before, CancellationToken ct) =>
+        db.OutboxWebhooks.Where(w => w.SentAt < before || w.FailedAt < before).ExecuteDeleteAsync(ct);
 }
 
 public sealed class RetentionCleanupService(

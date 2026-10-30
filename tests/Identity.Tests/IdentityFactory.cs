@@ -14,6 +14,7 @@ using Identity.Application.Options;
 using Identity.Application.Abstractions.Security;
 using Identity.Application.Dtos;
 using Identity.Application.Services;
+using Identity.Infrastructure.Caching;
 using Identity.Infrastructure.Messaging;
 using Identity.Infrastructure.Persistence;
 using Identity.Infrastructure.Persistence.Interceptors;
@@ -29,6 +30,11 @@ public abstract class TestHostFactory : WebApplicationFactory<Program>
 {
     public const string AdminEmail = "admin@test.local";
     public const string AdminPassword = "Admin12345";
+    public const string StoreClientId = "store";
+    public const string StoreAudience = "store-api";
+    public const string StoreSecret = "store-secret-0123456789-abcdefghij-xyz";
+    public const string StoreWebhookUrl = "https://store.test/identity-events";
+    public const string StoreWebhookSecret = "store-webhook-secret-0123456789-abcdef";
 
     public CapturingEmailTransport Emails { get; } = new();
 
@@ -40,9 +46,18 @@ public abstract class TestHostFactory : WebApplicationFactory<Program>
         builder.UseSetting("PasswordHashing:Parallelism", "1");
         builder.UseSetting("RateLimiting:StrictPermitLimit", "10000");
         builder.UseSetting("RateLimiting:PermitLimit", "10000");
+        builder.UseSetting("RateLimiting:Distributed", "false"); // the Postgres suite turns it on with real Redis
         builder.UseSetting("Auth:VerificationResendCooldownSeconds", "0");
         builder.UseSetting("Outbox:Enabled", "false");
         builder.UseSetting("Retention:Enabled", "false");
+        // Two client apps: a store (confidential, can introspect) and a public mobile app.
+        builder.UseSetting("Clients:0:Id", StoreClientId);
+        builder.UseSetting("Clients:0:Audience", StoreAudience);
+        builder.UseSetting("Clients:0:Secret", StoreSecret);
+        builder.UseSetting("Clients:0:WebhookUrl", StoreWebhookUrl);
+        builder.UseSetting("Clients:0:WebhookSecret", StoreWebhookSecret);
+        builder.UseSetting("Clients:1:Id", "mobile");
+        builder.UseSetting("Clients:1:Audience", "mobile-api");
         builder.UseSetting("Seed:AdminEmail", AdminEmail);
         builder.UseSetting("Seed:AdminPassword", AdminPassword);
 
@@ -54,10 +69,20 @@ public abstract class TestHostFactory : WebApplicationFactory<Program>
             // Never call the real HIBP from tests.
             services.RemoveAll<IPasswordBreachChecker>();
             services.AddSingleton<IPasswordBreachChecker>(Breaches);
+
+            // Webhook calls go to a fake receiver instead of the network.
+            services.AddHttpClient(WebhookProcessor.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => Webhooks);
         });
     }
 
     public FakeBreachChecker Breaches { get; } = new();
+    public WebhookReceiver Webhooks { get; } = new();
+
+    public async Task<int> DispatchWebhooksAsync()
+    {
+        await using var scope = Services.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<WebhookProcessor>().DispatchPendingAsync();
+    }
 
     public async Task<int> DispatchEmailsAsync()
     {
@@ -150,6 +175,26 @@ public class IdentityFactory : TestHostFactory
     {
         base.Dispose(disposing);
         _connection.Dispose();
+    }
+}
+
+/// <summary>Real Redis implementations pointed at a port where nothing listens: a genuine Redis outage.</summary>
+public sealed class RedisDownFactory : IdentityFactory
+{
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+        builder.UseSetting("ConnectionStrings:Redis", "127.0.0.1:1,connectTimeout=200");
+        builder.UseSetting("RateLimiting:Distributed", "true");
+        builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<ILoginThrottle>();
+            services.AddSingleton<ILoginThrottle, RedisLoginThrottle>();
+            services.RemoveAll<IRefreshGraceStore>();
+            services.AddSingleton<IRefreshGraceStore, RedisRefreshGraceStore>();
+            services.RemoveAll<ISessionCache>();
+            services.AddSingleton<ISessionCache, RedisSessionCache>();
+        });
     }
 }
 
@@ -293,5 +338,24 @@ public sealed class InMemoryRefreshGraceStore(TimeProvider clock) : IRefreshGrac
     {
         _items[oldRefreshTokenHash] = (tokens, clock.GetUtcNow().UtcDateTime + ttl);
         return Task.CompletedTask;
+    }
+}
+
+/// <summary>Records webhook POSTs; <see cref="FailNext"/> makes the next ones answer 500.</summary>
+public sealed class WebhookReceiver : HttpMessageHandler
+{
+    public ConcurrentQueue<(string Url, string Body, Dictionary<string, string> Headers)> Received { get; } = new();
+    public int FailNext { get; set; }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        if (FailNext > 0)
+        {
+            FailNext--;
+            return new HttpResponseMessage(System.Net.HttpStatusCode.InternalServerError);
+        }
+        var headers = request.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value));
+        Received.Enqueue((request.RequestUri!.ToString(), await request.Content!.ReadAsStringAsync(ct), headers));
+        return new HttpResponseMessage(System.Net.HttpStatusCode.NoContent);
     }
 }

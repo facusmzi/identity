@@ -16,6 +16,7 @@ public sealed class PasswordPolicy(
     IPasswordBreachChecker breachChecker,
     AuditTrail audit,
     IOptions<BreachCheckOptions> options,
+    IdentityMetrics metrics,
     ILogger<PasswordPolicy> logger)
 {
     private readonly BreachCheckOptions _opt = options.Value;
@@ -29,11 +30,17 @@ public sealed class PasswordPolicy(
 
         switch (await breachChecker.CheckAsync(password, ct))
         {
+            case BreachCheckStatus.NotBreached:
+                metrics.BreachCheck("not_breached");
+                break;
+
             case BreachCheckStatus.Breached:
+                metrics.BreachCheck("breached");
                 throw new BadRequestException(
                     "This password has appeared in a data breach and cannot be used. Choose a different one.", "PASSWORD_BREACHED");
 
             case BreachCheckStatus.Unavailable:
+                metrics.BreachCheck("unavailable");
                 audit.Record(AuditActions.PasswordBreachCheckUnavailable, userId, userId, new { failOpen = _opt.FailOpen });
                 if (!_opt.FailOpen)
                     throw new BadRequestException(
