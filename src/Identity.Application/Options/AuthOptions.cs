@@ -1,0 +1,31 @@
+namespace Identity.Application.Options;
+
+public sealed class AuthOptions
+{
+    public const string Section = "Auth";
+
+    public int RefreshTokenDays { get; set; } = 30;
+    /// <summary>Long enough for client retries and parallel requests; every second is also a window for a stolen token.</summary>
+    public int RefreshGraceSeconds { get; set; } = 5;
+
+    public int VerificationCodeMinutes { get; set; } = 15;
+    public int VerificationResendCooldownSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Sends and wrong attempts are budgeted per window and are NOT reset by asking for a new code,
+    /// so resending cannot be used to brute-force the 6-digit code.
+    /// </summary>
+    public int VerificationWindowMinutes { get; set; } = 60;
+    public int VerificationMaxSendsPerWindow { get; set; } = 5;
+    public int VerificationMaxAttempts { get; set; } = 10;
+
+    public int PasswordResetMinutes { get; set; } = 30;
+    public int PasswordResetCooldownSeconds { get; set; } = 60;
+
+    /// <summary>Frontend page that receives ?email=..&amp;token=.. (optional; without it the email only shows the token).</summary>
+    public string? PasswordResetUrl { get; set; }
+
+    public int LoginMaxFailures { get; set; } = 10;
+    public int LoginFailureWindowMinutes { get; set; } = 15;
+    public int LoginLockoutMinutes { get; set; } = 15;
+}

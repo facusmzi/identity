@@ -1,0 +1,83 @@
+@base = http://localhost:5205
+@email = demo@example.com
+# Pegá acá los valores que devuelven login / refresh
+@accessToken =
+@refreshToken =
+
+### Register
+POST {{base}}/auth/register
+Content-Type: application/json
+
+{ "email": "{{email}}", "password": "Passw0rd!" }
+
+### Verify email (el código llega a Mailpit: http://localhost:8025)
+POST {{base}}/auth/verify-email
+Content-Type: application/json
+
+{ "email": "{{email}}", "code": "123456", "password": "Passw0rd!" }
+
+### Resend verification
+POST {{base}}/auth/resend-verification
+Content-Type: application/json
+
+{ "email": "{{email}}" }
+
+### Login
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "{{email}}", "password": "Passw0rd!" }
+
+### Refresh
+POST {{base}}/auth/refresh
+Content-Type: application/json
+
+{ "refreshToken": "{{refreshToken}}" }
+
+### Forgot password (el token llega a Mailpit)
+POST {{base}}/auth/forgot-password
+Content-Type: application/json
+
+{ "email": "{{email}}" }
+
+### Reset password
+POST {{base}}/auth/reset-password
+Content-Type: application/json
+
+{ "email": "{{email}}", "token": "pegar-token", "newPassword": "Reset123x" }
+
+### Me
+GET {{base}}/auth/me
+Authorization: Bearer {{accessToken}}
+
+### Sessions
+GET {{base}}/sessions
+Authorization: Bearer {{accessToken}}
+
+### Change password
+POST {{base}}/auth/change-password
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "oldPassword": "Passw0rd!", "newPassword": "NewPassw0rd" }
+
+### Logout
+POST {{base}}/auth/logout
+Authorization: Bearer {{accessToken}}
+
+### Delete my account (borrado lógico)
+DELETE {{base}}/auth/me
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "password": "Passw0rd!" }
+
+### Admin login (usuario sembrado en Development)
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "admin@identity.local", "password": "Admin12345" }
+
+### Admin: list users (incluye borrados)
+GET {{base}}/admin/users?page=1&pageSize=20&includeDeleted=true
+Authorization: Bearer {{accessToken}}
