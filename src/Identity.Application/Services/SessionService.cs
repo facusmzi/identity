@@ -55,8 +55,10 @@ public sealed class SessionService(
     {
         var session = await sessions.GetActiveWithUserAsync(sessionId, Now, ct);
         if (session is null || session.UserId != userId) return null;
-        return new SessionPrincipal(session.UserId, session.Id, session.User.EmailVerified, session.User.RoleNames(), session.ExpiresAt);
+        return new SessionPrincipal(session.UserId, session.Id, session.User.EmailVerified,
+            session.User.RoleNames(), session.User.EffectivePermissions(), session.ExpiresAt);
     }
 }
 
-public sealed record SessionPrincipal(Guid UserId, Guid SessionId, bool EmailVerified, IReadOnlyList<string> Roles, DateTime ExpiresAt);
+public sealed record SessionPrincipal(
+    Guid UserId, Guid SessionId, bool EmailVerified, IReadOnlyList<string> Roles, IReadOnlyList<string> Permissions, DateTime ExpiresAt);

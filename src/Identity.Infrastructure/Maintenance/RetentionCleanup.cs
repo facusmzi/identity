@@ -28,7 +28,7 @@ public sealed class RetentionOptions
 
 /// <summary>Hard-deletes data whose retention period is over. Idempotent, so several instances may run it.</summary>
 public sealed class RetentionCleanup(
-    ISessionRepository sessions, AuditLogRepository audit, AppDbContext db,
+    ISessionRepository sessions, IMfaRepository mfa, AuditLogRepository audit, AppDbContext db,
     TimeProvider clock, IOptions<RetentionOptions> options, ILogger<RetentionCleanup> logger)
 {
     private readonly RetentionOptions _opt = options.Value;
@@ -43,6 +43,7 @@ public sealed class RetentionCleanup(
         var purgedOutbox = await PurgeOutboxAsync(outboxBefore, ct);
 
         var purgedAudit = await audit.PurgeOlderThanAsync(now.AddDays(-_opt.AuditDays), ct);
+        await mfa.PurgeChallengesAsync(now.AddDays(-1), ct);
 
         if (purgedSessions + purgedOutbox + purgedAudit > 0)
             logger.LogInformation("Retention cleanup removed {Sessions} sessions, {Outbox} outbox emails, {Audit} audit entries",

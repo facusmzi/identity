@@ -91,3 +91,45 @@ GET {{base}}/.well-known/jwks.json
 
 ### Health
 GET {{base}}/health/ready
+
+### MFA: estado
+GET {{base}}/auth/mfa
+Authorization: Bearer {{accessToken}}
+
+### MFA: setup (devuelve el secreto y el otpauth:// para el QR)
+POST {{base}}/auth/mfa/setup
+Authorization: Bearer {{accessToken}}
+
+### MFA: activar con un código de la app (devuelve los códigos de recuperación, una sola vez)
+POST {{base}}/auth/mfa/enable
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "code": "123456" }
+
+### Login, segundo paso (con mfaToken del login; code o recoveryCode)
+POST {{base}}/auth/login/mfa
+Content-Type: application/json
+
+{ "mfaToken": "pegar-mfaToken", "code": "123456" }
+
+### MFA: desactivar
+POST {{base}}/auth/mfa/disable
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "password": "Passw0rd!", "code": "123456" }
+
+### Admin: crear un rol con permisos
+POST {{base}}/admin/roles
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "name": "Support", "description": "Lee usuarios", "permissions": ["users.read"] }
+
+### Admin: cambiar los permisos de un rol
+PUT {{base}}/admin/roles/Support/permissions
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "permissions": ["users.read", "audit.read"] }

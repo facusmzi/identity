@@ -10,7 +10,8 @@ namespace Identity.Api.Extensions;
 
 public static class AuthenticationExtensions
 {
-    public const string RoleClaim = "role";
+    public const string RoleClaim = AccessClaims.Role;
+    public const string PermissionClaim = AccessClaims.Permission;
 
     public static IServiceCollection AddJwtAuthentication(this IServiceCollection services)
     {
@@ -36,6 +37,7 @@ public static class AuthenticationExtensions
             });
 
         services.AddAuthorization();
+        services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationPolicyProvider, PermissionPolicyProvider>();
         return services;
     }
 
@@ -62,8 +64,13 @@ public static class AuthenticationExtensions
             return;
         }
 
+        // The token carries roles/permissions for OTHER services, as of when it was issued. Here they are replaced
+        // by the current ones, so a role removed a minute ago never authorizes anything in this service.
         var identity = (ClaimsIdentity)principal.Identity!;
+        foreach (var stale in identity.Claims.Where(c => c.Type is RoleClaim or PermissionClaim).ToList())
+            identity.RemoveClaim(stale);
         foreach (var role in session.Roles) identity.AddClaim(new Claim(RoleClaim, role));
+        foreach (var permission in session.Permissions) identity.AddClaim(new Claim(PermissionClaim, permission));
     }
 
     public static Guid GetUserId(this ClaimsPrincipal user) =>

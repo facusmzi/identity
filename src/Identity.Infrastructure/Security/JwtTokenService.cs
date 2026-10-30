@@ -27,6 +27,12 @@ public sealed class JwtOptions
     public string DevKeyPath { get; set; } = ".keys/dev-signing-key.pem";
 }
 
+public static class AccessClaims
+{
+    public const string Role = "role";
+    public const string Permission = "perm";
+}
+
 public sealed class SigningKeyOptions
 {
     public string? KeyId { get; set; }
@@ -41,10 +47,27 @@ public sealed class JwtTokenService(IOptions<JwtOptions> options, SigningKeyProv
     private readonly JsonWebTokenHandler _handler = new();
     private readonly SigningCredentials _credentials = new(keys.Active, SecurityAlgorithms.RsaSha256);
 
-    public (string Token, DateTime ExpiresAt) CreateAccessToken(Guid userId, Guid sessionId, string email)
+    /// <summary>
+    /// Claims: sub, sid, email, email_verified, jti, typ, plus <c>role</c>, <c>perm</c> and <c>amr</c> (arrays) so other
+    /// services can authorize on their own. They reflect the moment of issue (stale for at most AccessTokenMinutes).
+    /// </summary>
+    public (string Token, DateTime ExpiresAt) CreateAccessToken(AccessTokenRequest request)
     {
         var now = clock.GetUtcNow().UtcDateTime;
         var expires = now.AddMinutes(_opt.AccessTokenMinutes);
+
+        List<Claim> claims =
+        [
+            new(JwtRegisteredClaimNames.Sub, request.UserId.ToString()),
+            new(JwtRegisteredClaimNames.Sid, request.SessionId.ToString()),
+            new(JwtRegisteredClaimNames.Email, request.Email),
+            new("email_verified", "true", ClaimValueTypes.Boolean),
+            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+            new("typ", "access"),
+        ];
+        claims.AddRange(request.Roles.Select(r => new Claim(AccessClaims.Role, r)));
+        claims.AddRange(request.Permissions.Select(p => new Claim(AccessClaims.Permission, p)));
+        claims.AddRange(request.AuthenticationMethods.Select(m => new Claim(JwtRegisteredClaimNames.Amr, m)));
 
         var token = _handler.CreateToken(new SecurityTokenDescriptor
         {
@@ -53,14 +76,7 @@ public sealed class JwtTokenService(IOptions<JwtOptions> options, SigningKeyProv
             IssuedAt = now,
             NotBefore = now,
             Expires = expires,
-            Subject = new ClaimsIdentity(
-            [
-                new Claim(JwtRegisteredClaimNames.Sub, userId.ToString()),
-                new Claim(JwtRegisteredClaimNames.Sid, sessionId.ToString()),
-                new Claim(JwtRegisteredClaimNames.Email, email),
-                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-                new Claim("typ", "access"),
-            ]),
+            Subject = new ClaimsIdentity(claims),
             SigningCredentials = _credentials,
         });
 

@@ -38,10 +38,17 @@ public sealed class AuthController(AuthService auth) : ControllerBase
         return Ok(new { message = "If the account is pending verification, a new code has been sent" });
     }
 
+    /// <summary>Returns the tokens, or <c>mfaRequired: true</c> plus an <c>mfaToken</c> for POST /auth/login/mfa.</summary>
     [HttpPost("login")]
     [EnableRateLimiting(RateLimitingExtensions.Default)]
-    public async Task<ActionResult<AuthTokensResponse>> Login(LoginRequest req, CancellationToken ct) =>
+    public async Task<ActionResult<LoginResponse>> Login(LoginRequest req, CancellationToken ct) =>
         await auth.LoginAsync(req, ClientMeta(), ct);
+
+    /// <summary>Second login step with a TOTP <c>code</c> or a <c>recoveryCode</c>.</summary>
+    [HttpPost("login/mfa")]
+    [EnableRateLimiting(RateLimitingExtensions.Default)]
+    public async Task<ActionResult<AuthTokensResponse>> LoginMfa(MfaLoginRequest req, CancellationToken ct) =>
+        await auth.LoginWithMfaAsync(req, ClientMeta(), ct);
 
     [HttpPost("refresh")]
     [EnableRateLimiting(RateLimitingExtensions.Default)]

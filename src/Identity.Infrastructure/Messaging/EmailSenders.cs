@@ -47,6 +47,13 @@ public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailTrans
         }, ct);
     }
 
+    public Task SendSecurityNoticeAsync(string to, string subject, string message, CancellationToken ct = default) =>
+        SendAsync(to, subject, new BodyBuilder
+        {
+            TextBody = message,
+            HtmlBody = $"<p>{WebUtility.HtmlEncode(message)}</p>",
+        }, ct);
+
     private async Task SendAsync(string to, string subject, BodyBuilder body, CancellationToken ct)
     {
         var message = new MimeMessage();
@@ -75,6 +82,12 @@ public sealed class LoggingEmailSender(ILogger<LoggingEmailSender> logger) : IEm
     public Task SendPasswordResetAsync(string to, string token, string? link, CancellationToken ct = default)
     {
         logger.LogWarning("SMTP not configured. Password reset for {Email}: {Link}", to, link ?? token);
+        return Task.CompletedTask;
+    }
+
+    public Task SendSecurityNoticeAsync(string to, string subject, string message, CancellationToken ct = default)
+    {
+        logger.LogWarning("SMTP not configured. Security notice for {Email}: {Subject}", to, subject);
         return Task.CompletedTask;
     }
 }

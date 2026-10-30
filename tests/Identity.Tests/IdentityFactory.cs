@@ -49,8 +49,14 @@ public abstract class TestHostFactory : WebApplicationFactory<Program>
         {
             services.RemoveAll<IEmailTransport>();
             services.AddSingleton<IEmailTransport>(Emails);
+
+            // Never call the real HIBP from tests.
+            services.RemoveAll<IPasswordBreachChecker>();
+            services.AddSingleton<IPasswordBreachChecker>(Breaches);
         });
     }
+
+    public FakeBreachChecker Breaches { get; } = new();
 
     public async Task<int> DispatchEmailsAsync()
     {
@@ -180,6 +186,18 @@ public sealed class CapturingEmailTransport : IEmailTransport
         return Task.CompletedTask;
     }
 
+    private readonly ConcurrentQueue<(string To, string Subject)> _notices = new();
+
+    public Task SendSecurityNoticeAsync(string to, string subject, string message, CancellationToken ct = default)
+    {
+        if (FailWith is not null) throw FailWith;
+        _notices.Enqueue((to, subject));
+        return Task.CompletedTask;
+    }
+
+    public IReadOnlyList<string> NoticesFor(string email) =>
+        _notices.Where(n => n.To == email.ToLowerInvariant()).Select(n => n.Subject).ToList();
+
     public string LastCodeFor(string email) => _codes[email.ToLowerInvariant()];
 
     public string? LastResetTokenFor(string email) => _resetTokens.GetValueOrDefault(email.ToLowerInvariant());
@@ -212,6 +230,17 @@ public sealed class InMemoryLoginThrottle(IOptions<AuthOptions> options) : ILogi
         _locks.TryRemove(email, out _);
         return Task.CompletedTask;
     }
+}
+
+/// <summary>Breached = the passwords in <see cref="Breached"/>; <see cref="Unavailable"/> simulates HIBP being down.</summary>
+public sealed class FakeBreachChecker : IPasswordBreachChecker
+{
+    public HashSet<string> Breached { get; } = ["Password123", "Qwerty12345"];
+    public bool Unavailable { get; set; }
+
+    public Task<BreachCheckStatus> CheckAsync(string password, CancellationToken ct = default) =>
+        Task.FromResult(Unavailable ? BreachCheckStatus.Unavailable
+            : Breached.Contains(password) ? BreachCheckStatus.Breached : BreachCheckStatus.NotBreached);
 }
 
 /// <summary>Same generation semantics as RedisSessionCache, in memory.</summary>

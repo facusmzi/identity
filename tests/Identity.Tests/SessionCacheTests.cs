@@ -111,7 +111,7 @@ public sealed class SessionCacheTests(IdentityFactory factory) : IClassFixture<I
         options.ConnectTimeout = 200;
         using var redis = await ConnectionMultiplexer.ConnectAsync(options);
         var cache = new RedisSessionCache(redis, NullLogger<RedisSessionCache>.Instance);
-        var principal = new SessionPrincipal(Guid.NewGuid(), Guid.NewGuid(), true, ["User"], DateTime.UtcNow.AddDays(1));
+        var principal = new SessionPrincipal(Guid.NewGuid(), Guid.NewGuid(), true, ["User"], [], DateTime.UtcNow.AddDays(1));
 
         var sw = Stopwatch.StartNew();
         var (cached, generation) = await cache.GetAsync(principal.SessionId, principal.UserId);

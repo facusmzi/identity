@@ -24,7 +24,7 @@ public sealed class RedisSessionCacheTests(PostgresFixture fixture)
         var factory = fixture.Require();
         await using var scope = factory.Services.CreateAsyncScope();
         var cache = scope.ServiceProvider.GetRequiredService<ISessionCache>();
-        var principal = new SessionPrincipal(Guid.NewGuid(), Guid.NewGuid(), true, ["User"], DateTime.UtcNow.AddDays(1));
+        var principal = new SessionPrincipal(Guid.NewGuid(), Guid.NewGuid(), true, ["User"], [], DateTime.UtcNow.AddDays(1));
 
         var (_, generationSeenByRequest) = await cache.GetAsync(principal.SessionId, principal.UserId); // request starts
         await cache.InvalidateUserAsync(principal.UserId);                                            // revocation commits

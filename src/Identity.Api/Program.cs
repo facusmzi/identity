@@ -30,8 +30,9 @@ builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
-// Load the signing keys now: a missing or unreadable key must stop the startup, not fail every request later.
+// Load the keys now: a missing or unreadable key must stop the startup, not fail every request later.
 app.Services.GetRequiredService<SigningKeyProvider>();
+app.Services.GetRequiredService<Identity.Application.Abstractions.Security.ISecretProtector>();
 await DbInitializer.InitializeAsync(app.Services);
 
 // Must run first so the rate limiter, sessions and the audit log see the real client address.

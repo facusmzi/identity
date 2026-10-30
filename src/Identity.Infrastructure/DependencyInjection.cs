@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Http.Resilience;
+using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 using Identity.Application.Abstractions.Messaging;
 using Identity.Application.Abstractions.Persistence;
@@ -24,6 +26,8 @@ public static class DependencyInjection
         services.Configure<SmtpOptions>(config.GetSection(SmtpOptions.Section));
         services.Configure<OutboxOptions>(config.GetSection(OutboxOptions.Section));
         services.Configure<RetentionOptions>(config.GetSection(RetentionOptions.Section));
+        services.Configure<SecretEncryptionOptions>(config.GetSection(SecretEncryptionOptions.Section));
+        services.Configure<HibpClientOptions>(config.GetSection(HibpClientOptions.Section));
 
         // Persistence
         services.AddSingleton<AuditAndSoftDeleteInterceptor>();
@@ -35,6 +39,7 @@ public static class DependencyInjection
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<ISessionRepository, SessionRepository>();
         services.AddScoped<IRoleRepository, RoleRepository>();
+        services.AddScoped<IMfaRepository, MfaRepository>();
         services.AddScoped<AuditLogRepository>();
         services.AddScoped<IAuditLogRepository>(sp => sp.GetRequiredService<AuditLogRepository>());
 
@@ -42,6 +47,22 @@ public static class DependencyInjection
         services.AddSingleton<SigningKeyProvider>();
         services.AddSingleton<IPasswordHasher, Argon2PasswordHasher>();
         services.AddSingleton<ITokenService, JwtTokenService>();
+        services.AddSingleton<ISecretProtector, AesGcmSecretProtector>();
+
+        // Have I Been Pwned: short timeout, retries and a circuit breaker; failures become "Unavailable".
+        var hibp = services.AddHttpClient<IPasswordBreachChecker, HibpPasswordBreachChecker>((sp, client) =>
+            {
+                client.BaseAddress = new Uri(sp.GetRequiredService<IOptions<HibpClientOptions>>().Value.BaseUrl);
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("Identity-Service/1.0");
+            })
+            .AddStandardResilienceHandler();
+        services.AddOptions<HttpStandardResilienceOptions>(hibp.PipelineName).Configure<IOptions<HibpClientOptions>>((o, h) =>
+        {
+            var timeout = TimeSpan.FromSeconds(Math.Max(1, h.Value.TimeoutSeconds));
+            o.AttemptTimeout.Timeout = timeout;
+            o.TotalRequestTimeout.Timeout = timeout * 2;
+            o.CircuitBreaker.SamplingDuration = timeout * 4;
+        });
 
         // Redis (not aborting on connect failure lets the API start and report it through /health/ready)
         services.AddSingleton<IConnectionMultiplexer>(_ =>

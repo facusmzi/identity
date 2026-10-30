@@ -19,7 +19,7 @@ public sealed class SessionRepository(AppDbContext db) : ISessionRepository
 
     public Task<Session?> GetActiveWithUserAsync(Guid sessionId, DateTime now, CancellationToken ct = default) =>
         Set.AsNoTracking()
-            .Include(s => s.User).ThenInclude(u => u.UserRoles).ThenInclude(ur => ur.Role)
+            .Include(s => s.User).ThenInclude(u => u.UserRoles).ThenInclude(ur => ur.Role).ThenInclude(r => r.RolePermissions)
             .FirstOrDefaultAsync(s => s.Id == sessionId && s.RevokedAt == null && s.ExpiresAt > now, ct);
 
     public async Task<IReadOnlyList<Session>> ListActiveForUserAsync(Guid userId, DateTime now, CancellationToken ct = default) =>

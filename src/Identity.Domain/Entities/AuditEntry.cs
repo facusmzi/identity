@@ -37,4 +37,14 @@ public static class AuditActions
     public const string AdminUserRestored = "admin.user_restored";
     public const string AdminRoleAssigned = "admin.role_assigned";
     public const string AdminRoleRemoved = "admin.role_removed";
+    public const string AdminRoleCreated = "admin.role_created";
+    public const string AdminRolePermissionsChanged = "admin.role_permissions_changed";
+    public const string AdminRoleDeleted = "admin.role_deleted";
+
+    public const string MfaEnabled = "mfa.enabled";
+    public const string MfaDisabled = "mfa.disabled";
+    public const string MfaFailed = "mfa.failed";
+    public const string MfaRecoveryCodeUsed = "mfa.recovery_code_used";
+    public const string MfaRecoveryCodesRegenerated = "mfa.recovery_codes_regenerated";
+    public const string PasswordBreachCheckUnavailable = "password.breach_check_unavailable";
 }

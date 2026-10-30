@@ -48,9 +48,50 @@ public sealed record AuthTokensResponse(
     DateTime AccessExpiresAt,
     DateTime RefreshExpiresAt);
 
+/// <summary>
+/// Login result. Without MFA it carries the tokens (same shape as <see cref="AuthTokensResponse"/>). With MFA the
+/// tokens are null, <see cref="MfaRequired"/> is true and <see cref="MfaToken"/> goes to POST /auth/login/mfa.
+/// </summary>
+public sealed record LoginResponse(
+    string? AccessToken,
+    string? RefreshToken,
+    DateTime? AccessExpiresAt,
+    DateTime? RefreshExpiresAt,
+    bool MfaRequired,
+    string? MfaToken)
+{
+    public static LoginResponse From(AuthTokensResponse t) =>
+        new(t.AccessToken, t.RefreshToken, t.AccessExpiresAt, t.RefreshExpiresAt, false, null);
+
+    public static LoginResponse Mfa(string mfaToken) => new(null, null, null, null, true, mfaToken);
+}
+
+/// <summary>Second login step: the TOTP code from the app, or one of the recovery codes.</summary>
+public sealed record MfaLoginRequest(
+    [Required, MaxLength(256)] string MfaToken,
+    [MaxLength(16)] string? Code,
+    [MaxLength(32)] string? RecoveryCode);
+
+public sealed record MfaStatusResponse(bool Enabled, int RecoveryCodesLeft);
+
+/// <summary>The secret is shown once, to type it or to scan <see cref="OtpAuthUri"/> as a QR code.</summary>
+public sealed record MfaSetupResponse(string Secret, string OtpAuthUri);
+
+public sealed record MfaCodeRequest([Required, MaxLength(16)] string Code);
+
+public sealed record MfaDisableRequest(
+    [Required, MaxLength(PasswordRules.MaxLength)] string Password,
+    [MaxLength(16)] string? Code,
+    [MaxLength(32)] string? RecoveryCode);
+
+/// <summary>Shown once; only their hashes are stored.</summary>
+public sealed record RecoveryCodesResponse(IReadOnlyList<string> RecoveryCodes);
+
 public sealed record UserResponse(
     Guid Id,
     string Email,
     bool EmailVerified,
     IReadOnlyList<string> Roles,
+    IReadOnlyList<string> Permissions,
+    bool MfaEnabled,
     DateTime CreatedAt);

@@ -2,13 +2,19 @@ using Identity.Application.Abstractions.Persistence;
 using Identity.Application.Abstractions.Security;
 using Identity.Application.Common;
 using Identity.Application.Dtos;
+using Identity.Domain.Authorization;
 using Identity.Domain.Entities;
 
 namespace Identity.Application.Services;
 
 /// <summary>
-/// Every action is written to the audit log in the same transaction as the change. Admin accounts are
-/// protected: an admin must be demoted before being deleted, and the last admin can never be demoted or deleted.
+/// Every action is written to the audit log in the same transaction as the change.
+/// <list type="bullet">
+/// <item>No privilege escalation: you can only grant, revoke, assign or remove permissions you hold yourself.</item>
+/// <item>Admin accounts are protected: an admin must be demoted before being deleted, and the last admin can
+/// never be demoted or deleted.</item>
+/// <item>Admin and User are system roles: they cannot be deleted, and Admin's permissions cannot be edited.</item>
+/// </list>
 /// </summary>
 public sealed class AdminService(
     IUserRepository users,
@@ -33,9 +39,6 @@ public sealed class AdminService(
         (await users.GetWithRolesAsync(id, includeDeleted: true, ct) ?? throw new NotFoundException("User not found"))
         .ToAdminResponse();
 
-    public async Task<IReadOnlyList<RoleResponse>> ListRolesAsync(CancellationToken ct = default) =>
-        (await roles.ListAsync(ct)).Select(r => r.ToResponse()).ToList();
-
     public async Task<PagedResult<AuditEntryResponse>> ListAuditAsync(
         Guid? userId, string? action, int page, int pageSize, CancellationToken ct = default)
     {
@@ -44,10 +47,81 @@ public sealed class AdminService(
         return result.Map(e => e.ToResponse());
     }
 
+    // ---- roles ----
+
+    public static IReadOnlyList<string> ListPermissions() => Permissions.All;
+
+    public async Task<IReadOnlyList<RoleResponse>> ListRolesAsync(CancellationToken ct = default) =>
+        (await roles.ListAsync(ct)).Select(r => r.ToResponse()).ToList();
+
+    public async Task<RoleResponse> CreateRoleAsync(Guid actingUserId, CreateRoleRequest req, CancellationToken ct = default)
+    {
+        var name = req.Name.Trim();
+        var permissions = ValidatePermissions(req.Permissions);
+        await EnsureActorHoldsAsync(actingUserId, permissions, ct);
+        if (await roles.GetByNameAsync(name, ct) is not null)
+            throw new ConflictException($"Role '{name}' already exists", "ROLE_EXISTS");
+
+        var role = new Role { Name = name, Description = req.Description?.Trim() };
+        foreach (var p in permissions) role.RolePermissions.Add(new RolePermission { Role = role, Permission = p });
+        await roles.AddAsync(role, ct);
+        audit.Record(AuditActions.AdminRoleCreated, actingUserId, null, new { role = name, permissions });
+
+        try
+        {
+            await uow.SaveChangesAsync(ct);
+        }
+        catch (UniqueConstraintViolationException)
+        {
+            throw new ConflictException($"Role '{name}' already exists", "ROLE_EXISTS");
+        }
+        return role.ToResponse();
+    }
+
+    public async Task<RoleResponse> SetRolePermissionsAsync(Guid actingUserId, string roleName, SetRolePermissionsRequest req, CancellationToken ct = default)
+    {
+        var role = await roles.GetByNameAsync(roleName, ct) ?? throw new NotFoundException($"Role '{roleName}' not found");
+        if (role.Name == Role.Admin)
+            throw new BadRequestException("The Admin role always has every permission", "ADMIN_ROLE_IMMUTABLE");
+
+        var wanted = ValidatePermissions(req.Permissions);
+        var current = role.RolePermissions.Select(p => p.Permission).ToHashSet();
+        var added = wanted.Except(current).ToList();
+        var removed = current.Except(wanted).ToList();
+        // Changing a permission (either way) requires holding it.
+        await EnsureActorHoldsAsync(actingUserId, added.Concat(removed), ct);
+
+        foreach (var link in role.RolePermissions.Where(p => removed.Contains(p.Permission)).ToList())
+            role.RolePermissions.Remove(link); // logical delete through the interceptor
+        foreach (var p in added) role.RolePermissions.Add(new RolePermission { RoleId = role.Id, Permission = p });
+
+        audit.Record(AuditActions.AdminRolePermissionsChanged, actingUserId, null, new { role = role.Name, added, removed });
+        await uow.SaveChangesAsync(ct);
+        await InvalidateMembersAsync(role.Id, ct);
+        return role.ToResponse();
+    }
+
+    public async Task DeleteRoleAsync(Guid actingUserId, string roleName, CancellationToken ct = default)
+    {
+        var role = await roles.GetForDeletionAsync(roleName, ct) ?? throw new NotFoundException($"Role '{roleName}' not found");
+        if (role.IsSystem) throw new BadRequestException("System roles cannot be deleted", "SYSTEM_ROLE");
+        await EnsureActorHoldsAsync(actingUserId, role.EffectivePermissions(), ct);
+
+        var members = role.UserRoles.Select(ur => ur.UserId).Distinct().ToList();
+        foreach (var link in role.UserRoles.ToList()) role.UserRoles.Remove(link);
+        foreach (var link in role.RolePermissions.ToList()) role.RolePermissions.Remove(link);
+        roles.Remove(role);
+
+        audit.Record(AuditActions.AdminRoleDeleted, actingUserId, null, new { role = role.Name, members = members.Count });
+        await uow.SaveChangesAsync(ct);
+        foreach (var userId in members) await sessionCache.InvalidateUserAsync(userId, ct);
+    }
+
     public async Task<AdminUserResponse> AssignRoleAsync(Guid actingUserId, Guid userId, AssignRoleRequest req, CancellationToken ct = default)
     {
         var user = await users.GetWithRolesAsync(userId, ct: ct) ?? throw new NotFoundException("User not found");
         var role = await roles.GetByNameAsync(req.Role, ct) ?? throw new NotFoundException($"Role '{req.Role}' not found");
+        await EnsureActorHoldsAsync(actingUserId, role.EffectivePermissions(), ct);
 
         if (user.UserRoles.All(ur => ur.RoleId != role.Id))
         {
@@ -64,6 +138,7 @@ public sealed class AdminService(
         var user = await users.GetWithRolesAsync(userId, ct: ct) ?? throw new NotFoundException("User not found");
         var link = user.UserRoles.FirstOrDefault(ur => string.Equals(ur.Role.Name, roleName, StringComparison.OrdinalIgnoreCase))
             ?? throw new NotFoundException($"User does not have role '{roleName}'");
+        await EnsureActorHoldsAsync(actingUserId, link.Role.EffectivePermissions(), ct);
 
         if (link.Role.Name == Role.Admin)
         {
@@ -80,6 +155,8 @@ public sealed class AdminService(
         return user.ToAdminResponse();
     }
 
+    // ---- users ----
+
     public async Task DeleteUserAsync(Guid actingUserId, Guid userId, CancellationToken ct = default)
     {
         if (userId == actingUserId) throw new BadRequestException("Use DELETE /auth/me to delete your own account");
@@ -87,6 +164,7 @@ public sealed class AdminService(
         var user = await users.GetWithRolesAsync(userId, ct: ct) ?? throw new NotFoundException("User not found");
         if (user.RoleNames().Contains(Role.Admin))
             throw new BadRequestException("Remove the Admin role before deleting an admin", "TARGET_IS_ADMIN");
+        await EnsureActorHoldsAsync(actingUserId, user.EffectivePermissions(), ct);
 
         audit.Record(AuditActions.AdminUserDeleted, actingUserId, userId);
         await uow.ExecuteInTransactionAsync(async t =>
@@ -110,6 +188,37 @@ public sealed class AdminService(
         audit.Record(AuditActions.AdminUserRestored, actingUserId, userId);
         await uow.SaveChangesAsync(ct);
         return user.ToAdminResponse();
+    }
+
+    // ---- helpers ----
+
+    /// <summary>
+    /// The anti-escalation rule: whoever grants, revokes, assigns or removes a set of permissions (directly or
+    /// through a role) must hold all of them. Someone with roles.assign but not audit.read cannot hand out a role
+    /// that includes audit.read, and cannot assign Admin unless they effectively are one.
+    /// </summary>
+    private async Task EnsureActorHoldsAsync(Guid actingUserId, IEnumerable<string> permissions, CancellationToken ct)
+    {
+        var held = (await users.GetAccessAsync(actingUserId, ct)).Permissions.ToHashSet();
+        var missing = permissions.Where(p => !held.Contains(p)).Distinct().Order().ToList();
+        if (missing.Count > 0)
+            throw new ForbiddenException($"You cannot grant or revoke permissions you do not have: {string.Join(", ", missing)}",
+                "PRIVILEGE_ESCALATION");
+    }
+
+    private static List<string> ValidatePermissions(IEnumerable<string> permissions)
+    {
+        var list = permissions.Select(p => p.Trim()).Distinct().ToList();
+        var unknown = list.Where(p => !Permissions.IsKnown(p)).ToList();
+        if (unknown.Count > 0)
+            throw new BadRequestException($"Unknown permissions: {string.Join(", ", unknown)}", "UNKNOWN_PERMISSION");
+        return list;
+    }
+
+    private async Task InvalidateMembersAsync(Guid roleId, CancellationToken ct)
+    {
+        foreach (var userId in await users.ListIdsWithRoleAsync(roleId, ct))
+            await sessionCache.InvalidateUserAsync(userId, ct);
     }
 
     private async Task EnsureNotLastAdminAsync(Guid userId, CancellationToken ct)

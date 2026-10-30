@@ -1,8 +1,20 @@
 namespace Identity.Application.Abstractions.Security;
 
+/// <summary>
+/// What goes into an access token. Roles and permissions are included for OTHER services (they cannot ask
+/// this one on every request); this service itself always re-reads them, so here they are never stale.
+/// </summary>
+public sealed record AccessTokenRequest(
+    Guid UserId,
+    Guid SessionId,
+    string Email,
+    IReadOnlyList<string> Roles,
+    IReadOnlyList<string> Permissions,
+    IReadOnlyList<string> AuthenticationMethods);
+
 public interface ITokenService
 {
-    (string Token, DateTime ExpiresAt) CreateAccessToken(Guid userId, Guid sessionId, string email);
+    (string Token, DateTime ExpiresAt) CreateAccessToken(AccessTokenRequest request);
 
     /// <summary>
     /// Opaque refresh token "{sessionId}.{random}". Carrying the session id lets a reused (already rotated)

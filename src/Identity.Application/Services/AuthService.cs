@@ -24,12 +24,17 @@ public sealed class AuthService(
     ILoginThrottle loginThrottle,
     ISessionCache sessionCache,
     IEmailOutbox outbox,
+    IMfaRepository mfa,
+    SecondFactor secondFactor,
+    PasswordPolicy passwordPolicy,
     AuditTrail audit,
     TimeProvider clock,
     IOptions<AuthOptions> options,
+    IOptions<MfaOptions> mfaOptions,
     ILogger<AuthService> logger)
 {
     private readonly AuthOptions _opt = options.Value;
+    private readonly MfaOptions _mfaOpt = mfaOptions.Value;
 
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
 
@@ -42,13 +47,19 @@ public sealed class AuthService(
     public async Task RegisterAsync(RegisterRequest req, CancellationToken ct = default)
     {
         var email = NormalizeEmail(req.Email);
+        // Before the lookup: a rejected (e.g. breached) password gets the same answer for any email.
+        await passwordPolicy.EnsureAcceptableAsync(req.Password, email, userId: null, ct);
         var passwordHash = await passwordHasher.HashAsync(req.Password, ct);
 
         var existing = await users.GetByEmailAsync(email, ct);
         if (existing is not null)
         {
-            // Verified: the owner can log in or reset the password; say nothing.
-            if (existing.EmailVerified) return;
+            // Verified: the owner can log in or reset the password; say nothing (only persist audit entries).
+            if (existing.EmailVerified)
+            {
+                await uow.SaveChangesAsync(ct);
+                return;
+            }
 
             if (TryIssueVerificationCode(existing) is not { } newCode) return;
             existing.PasswordHash = passwordHash;
@@ -128,7 +139,11 @@ public sealed class AuthService(
         await uow.SaveChangesAsync(ct);
     }
 
-    public async Task<AuthTokensResponse> LoginAsync(LoginRequest req, ClientMeta meta, CancellationToken ct = default)
+    /// <summary>
+    /// First (or only) login step. With MFA enabled a correct password does not give tokens: it gives a short-lived,
+    /// single-use challenge for POST /auth/login/mfa.
+    /// </summary>
+    public async Task<LoginResponse> LoginAsync(LoginRequest req, ClientMeta meta, CancellationToken ct = default)
     {
         var email = NormalizeEmail(req.Email);
         if (await loginThrottle.GetLockoutAsync(email, ct) is { } remaining)
@@ -153,8 +168,65 @@ public sealed class AuthService(
         if (!user!.EmailVerified)
             throw new ForbiddenException("Email not verified", "EMAIL_NOT_VERIFIED");
 
+        if (user.MfaEnabled)
+        {
+            var mfaToken = tokens.GenerateOpaqueToken();
+            mfa.AddChallenge(new MfaChallenge
+            {
+                UserId = user.Id,
+                TokenHash = tokens.Hash(mfaToken),
+                CreatedAt = Now,
+                ExpiresAt = Now.AddMinutes(_mfaOpt.ChallengeMinutes),
+                IpAddress = meta.IpAddress,
+                UserAgent = Truncate(meta.UserAgent, 512),
+            });
+            await uow.SaveChangesAsync(ct);
+            return LoginResponse.Mfa(mfaToken);
+        }
+
         audit.Record(AuditActions.LoginSucceeded, user.Id, user.Id);
-        return await CreateSessionAsync(user, LoginMethod.Email, meta, ct);
+        return LoginResponse.From(await CreateSessionAsync(user, LoginMethod.Email, meta, ct));
+    }
+
+    /// <summary>
+    /// Second login step. The challenge survives a typo (it is consumed only by a correct code) but has its own
+    /// attempt budget, and every failure also counts towards the account lockout shared with the password step.
+    /// </summary>
+    public async Task<AuthTokensResponse> LoginWithMfaAsync(MfaLoginRequest req, ClientMeta meta, CancellationToken ct = default)
+    {
+        var challenge = await mfa.GetActiveChallengeAsync(tokens.Hash(req.MfaToken), Now, ct);
+        if (challenge is null || challenge.FailedAttempts >= _mfaOpt.ChallengeMaxAttempts) throw MfaInvalid();
+
+        var user = await users.GetByIdAsync(challenge.UserId, ct);
+        if (user is not { MfaEnabled: true, EmailVerified: true }) throw MfaInvalid();
+
+        if (await loginThrottle.GetLockoutAsync(user.Email, ct) is { } remaining)
+            throw new TooManyRequestsException("Too many failed attempts, account temporarily locked", "ACCOUNT_LOCKED", remaining);
+
+        var usedTotp = await secondFactor.VerifyTotpAsync(user.Id, user.MfaSecretEncrypted, req.Code, ct);
+        var usedRecovery = !usedTotp && await secondFactor.UseRecoveryCodeAsync(user.Id, req.RecoveryCode, ct);
+
+        if (!usedTotp && !usedRecovery)
+        {
+            await mfa.RegisterChallengeFailureAsync(challenge.Id, ct);
+            var locked = await loginThrottle.RegisterFailureAsync(user.Email, ct);
+            audit.Record(AuditActions.MfaFailed, null, user.Id, new { operation = "login" });
+            if (locked) audit.Record(AuditActions.AccountLocked, null, user.Id);
+            await uow.SaveChangesAsync(ct);
+            throw MfaInvalid();
+        }
+
+        if (!await mfa.TryConsumeChallengeAsync(challenge.Id, Now, ct)) throw MfaInvalid();
+        await loginThrottle.ResetAsync(user.Email, ct);
+
+        audit.Record(AuditActions.LoginSucceeded, user.Id, user.Id, new { mfa = usedTotp ? "totp" : "recovery_code" });
+        if (usedRecovery)
+        {
+            audit.Record(AuditActions.MfaRecoveryCodeUsed, user.Id, user.Id);
+            outbox.EnqueueSecurityNotice(user.Email, "A recovery code was used",
+                "One of your two-factor recovery codes was just used to sign in. If this wasn't you, reset your password now.");
+        }
+        return await CreateSessionAsync(user, LoginMethod.EmailMfa, meta, ct);
     }
 
     public async Task<AuthTokensResponse> RefreshAsync(RefreshRequest req, ClientMeta meta, CancellationToken ct = default)
@@ -185,7 +257,7 @@ public sealed class AuthService(
         if (!rotated)
             return await WaitForGraceAsync(presentedHash, ct) ?? throw InvalidRefreshToken();
 
-        var (accessToken, accessExpiresAt) = tokens.CreateAccessToken(session.UserId, session.Id, session.User.Email);
+        var (accessToken, accessExpiresAt) = await CreateAccessTokenAsync(session.UserId, session.Id, session.User.Email, session.LoginMethod, ct);
         var result = new AuthTokensResponse(accessToken, refreshToken, accessExpiresAt, refreshExpiresAt);
 
         await graceStore.SetAsync(presentedHash, result, TimeSpan.FromSeconds(_opt.RefreshGraceSeconds), ct);
@@ -215,6 +287,7 @@ public sealed class AuthService(
         if (!await passwordHasher.VerifyAsync(req.OldPassword, user.PasswordHash, ct))
             throw new UnauthorizedException("Old password is incorrect", "INVALID_PASSWORD");
 
+        await passwordPolicy.EnsureAcceptableAsync(req.NewPassword, user.Email, userId, ct);
         user.PasswordHash = await passwordHasher.HashAsync(req.NewPassword, ct);
         ClearPasswordReset(user);
         audit.Record(AuditActions.PasswordChanged, userId, userId);
@@ -255,6 +328,7 @@ public sealed class AuthService(
             || !FixedTimeEquals(tokens.Hash(req.Token), user.PasswordResetTokenHash))
             throw new BadRequestException("Invalid or expired reset token", "INVALID_RESET_TOKEN");
 
+        await passwordPolicy.EnsureAcceptableAsync(req.NewPassword, user.Email, user.Id, ct);
         user.PasswordHash = await passwordHasher.HashAsync(req.NewPassword, ct);
         ClearPasswordReset(user);
         // Receiving the reset email proves ownership of the address. This also lets the real owner
@@ -351,9 +425,19 @@ public sealed class AuthService(
         await sessions.AddAsync(session, ct);
         await uow.SaveChangesAsync(ct);
 
-        var (accessToken, accessExpiresAt) = tokens.CreateAccessToken(user.Id, session.Id, user.Email);
+        var (accessToken, accessExpiresAt) = await CreateAccessTokenAsync(user.Id, session.Id, user.Email, method, ct);
         return new AuthTokensResponse(accessToken, refreshToken, accessExpiresAt, session.ExpiresAt);
     }
+
+    private async Task<(string Token, DateTime ExpiresAt)> CreateAccessTokenAsync(
+        Guid userId, Guid sessionId, string email, LoginMethod method, CancellationToken ct)
+    {
+        var access = await users.GetAccessAsync(userId, ct);
+        string[] amr = method == LoginMethod.EmailMfa ? ["pwd", "mfa"] : ["pwd"];
+        return tokens.CreateAccessToken(new AccessTokenRequest(userId, sessionId, email, access.Roles, access.Permissions, amr));
+    }
+
+    private static UnauthorizedException MfaInvalid() => new("The verification code is invalid or the login expired", "MFA_INVALID");
 
     private async Task<bool> FailDummyAsync(string password, CancellationToken ct)
     {

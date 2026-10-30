@@ -14,6 +14,7 @@ public interface IEmailTransport
 {
     Task SendVerificationCodeAsync(string to, string code, CancellationToken ct = default);
     Task SendPasswordResetAsync(string to, string token, string? link, CancellationToken ct = default);
+    Task SendSecurityNoticeAsync(string to, string subject, string message, CancellationToken ct = default);
 }
 
 public sealed class OutboxOptions
@@ -36,6 +37,7 @@ public sealed class OutboxEmail
 {
     public const string VerificationCode = "verification-code";
     public const string PasswordReset = "password-reset";
+    public const string SecurityNotice = "security-notice";
 
     public Guid Id { get; set; } = Guid.CreateVersion7();
     public required string Kind { get; set; }
@@ -52,6 +54,7 @@ public sealed class OutboxEmail
 
 internal sealed record VerificationPayload(string Code);
 internal sealed record PasswordResetPayload(string Token, string? Link);
+internal sealed record SecurityNoticePayload(string Subject, string Message);
 
 /// <summary>Stages emails in the DbContext; they are inserted by the caller's SaveChanges.</summary>
 public sealed class EfEmailOutbox(AppDbContext db, TimeProvider clock) : IEmailOutbox
@@ -61,6 +64,9 @@ public sealed class EfEmailOutbox(AppDbContext db, TimeProvider clock) : IEmailO
 
     public void EnqueuePasswordReset(string to, string token, string? link) =>
         Add(OutboxEmail.PasswordReset, to, new PasswordResetPayload(token, link));
+
+    public void EnqueueSecurityNotice(string to, string subject, string message) =>
+        Add(OutboxEmail.SecurityNotice, to, new SecurityNoticePayload(subject, message));
 
     private void Add(string kind, string to, object payload)
     {
@@ -154,12 +160,16 @@ public sealed class OutboxProcessor(
             OutboxEmail.VerificationCode =>
                 transport.SendVerificationCodeAsync(message.To, JsonSerializer.Deserialize<VerificationPayload>(payload)!.Code, ct),
             OutboxEmail.PasswordReset => SendResetAsync(message.To, JsonSerializer.Deserialize<PasswordResetPayload>(payload)!, ct),
+            OutboxEmail.SecurityNotice => SendNoticeAsync(message.To, JsonSerializer.Deserialize<SecurityNoticePayload>(payload)!, ct),
             _ => throw new InvalidOperationException($"Unknown outbox kind '{message.Kind}'"),
         };
     }
 
     private Task SendResetAsync(string to, PasswordResetPayload p, CancellationToken ct) =>
         transport.SendPasswordResetAsync(to, p.Token, p.Link, ct);
+
+    private Task SendNoticeAsync(string to, SecurityNoticePayload p, CancellationToken ct) =>
+        transport.SendSecurityNoticeAsync(to, p.Subject, p.Message, ct);
 }
 
 public sealed class OutboxDispatcher(

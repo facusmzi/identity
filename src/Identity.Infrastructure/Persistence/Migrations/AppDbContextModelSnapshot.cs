@@ -71,6 +71,105 @@ namespace Identity.Infrastructure.Persistence.Migrations
                     b.ToTable("audit_log", (string)null);
                 });
 
+            modelBuilder.Entity("Identity.Domain.Entities.MfaChallenge", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("ConsumedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("consumed_at");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<int>("FailedAttempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("failed_attempts");
+
+                    b.Property<string>("IpAddress")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("ip_address");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("token_hash");
+
+                    b.Property<string>("UserAgent")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("user_agent");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_mfa_challenges");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("ix_mfa_challenges_expires_at");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("ix_mfa_challenges_token_hash");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_mfa_challenges_user_id");
+
+                    b.ToTable("mfa_challenges", (string)null);
+                });
+
+            modelBuilder.Entity("Identity.Domain.Entities.MfaRecoveryCode", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CodeHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("code_hash");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<DateTime?>("UsedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("used_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_mfa_recovery_codes");
+
+                    b.HasIndex("UserId", "CodeHash")
+                        .HasDatabaseName("ix_mfa_recovery_codes_user_id_code_hash");
+
+                    b.ToTable("mfa_recovery_codes", (string)null);
+                });
+
             modelBuilder.Entity("Identity.Domain.Entities.Role", b =>
                 {
                     b.Property<Guid>("Id")
@@ -109,6 +208,45 @@ namespace Identity.Infrastructure.Persistence.Migrations
                         .HasFilter("deleted_at IS NULL");
 
                     b.ToTable("roles", (string)null);
+                });
+
+            modelBuilder.Entity("Identity.Domain.Entities.RolePermission", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at");
+
+                    b.Property<string>("Permission")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("permission");
+
+                    b.Property<Guid>("RoleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("role_id");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_role_permissions");
+
+                    b.HasIndex("RoleId", "Permission")
+                        .IsUnique()
+                        .HasDatabaseName("ix_role_permissions_role_id_permission")
+                        .HasFilter("deleted_at IS NULL");
+
+                    b.ToTable("role_permissions", (string)null);
                 });
 
             modelBuilder.Entity("Identity.Domain.Entities.Session", b =>
@@ -233,6 +371,24 @@ namespace Identity.Infrastructure.Persistence.Migrations
                     b.Property<bool>("EmailVerified")
                         .HasColumnType("boolean")
                         .HasColumnName("email_verified");
+
+                    b.Property<bool>("MfaEnabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("mfa_enabled");
+
+                    b.Property<long?>("MfaLastUsedTimeStep")
+                        .HasColumnType("bigint")
+                        .HasColumnName("mfa_last_used_time_step");
+
+                    b.Property<string>("MfaPendingSecretEncrypted")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("mfa_pending_secret_encrypted");
+
+                    b.Property<string>("MfaSecretEncrypted")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("mfa_secret_encrypted");
 
                     b.Property<string>("PasswordHash")
                         .HasMaxLength(256)
@@ -371,6 +527,40 @@ namespace Identity.Infrastructure.Persistence.Migrations
                     b.ToTable("outbox_emails", (string)null);
                 });
 
+            modelBuilder.Entity("Identity.Domain.Entities.MfaChallenge", b =>
+                {
+                    b.HasOne("Identity.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_mfa_challenges_users_user_id");
+                });
+
+            modelBuilder.Entity("Identity.Domain.Entities.MfaRecoveryCode", b =>
+                {
+                    b.HasOne("Identity.Domain.Entities.User", "User")
+                        .WithMany("RecoveryCodes")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_mfa_recovery_codes_users_user_id");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("Identity.Domain.Entities.RolePermission", b =>
+                {
+                    b.HasOne("Identity.Domain.Entities.Role", "Role")
+                        .WithMany("RolePermissions")
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_role_permissions_roles_role_id");
+
+                    b.Navigation("Role");
+                });
+
             modelBuilder.Entity("Identity.Domain.Entities.Session", b =>
                 {
                     b.HasOne("Identity.Domain.Entities.User", "User")
@@ -406,11 +596,15 @@ namespace Identity.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Identity.Domain.Entities.Role", b =>
                 {
+                    b.Navigation("RolePermissions");
+
                     b.Navigation("UserRoles");
                 });
 
             modelBuilder.Entity("Identity.Domain.Entities.User", b =>
                 {
+                    b.Navigation("RecoveryCodes");
+
                     b.Navigation("Sessions");
 
                     b.Navigation("UserRoles");

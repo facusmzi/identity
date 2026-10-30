@@ -36,8 +36,11 @@ Dependencias: `Api → Application ← Infrastructure` y `Application → Domain
 
 ## Sesiones y tokens
 
-- Access token **JWT RS256** (15 min). En cada request se valida que la sesión siga viva y que el usuario no esté
-  borrado, y se cargan sus roles.
+- Access token **JWT RS256** (15 min). Lleva `sub`, `sid`, `email`, `email_verified`, y como arrays `role`, `perm`
+  (permisos) y `amr` (`pwd`, o `pwd`+`mfa` si se usó segundo factor), para que **otros servicios** autoricen solos.
+  Esos claims son los del momento de emisión: en otros servicios pueden quedar viejos hasta 15 min.
+- En cada request **a este servicio** se valida que la sesión siga viva y que el usuario no esté borrado, y los roles
+  y permisos del token se **reemplazan** por los actuales: un rol quitado hace un minuto ya no autoriza nada acá.
 - **Caché de sesiones** (Redis, `Auth:SessionCacheSeconds`, 30 s; 0 la apaga): esa validación sale de Redis en vez de
   la base. Igual, revocar una sesión, cambiar roles o la contraseña, o borrar el usuario aplica **en el request
   siguiente**: cada uno de esos caminos incrementa un número de generación por usuario después del commit, y una
@@ -68,11 +71,38 @@ Dependencias: `Api → Application ← Infrastructure` y `Application → Domain
   causa y los entrega un proceso en segundo plano, con reintentos (backoff exponencial, hasta 8) y bloqueo por fila
   para que varias instancias no manden dos veces el mismo. El código/token se borra de la tabla apenas se entrega.
 - Recuperación de contraseña con token de un solo uso (hasheado, 30 min). El reset marca el email como verificado.
+- **Contraseñas filtradas (HIBP)**: en registro, cambio y reset se consulta Have I Been Pwned con k-anonymity (solo
+  salen los primeros 5 caracteres del SHA-1, con padding) y se rechazan las que aparecen en filtraciones
+  (`PASSWORD_BREACHED`). En el registro se chequea **antes** de mirar si el email existe. Si HIBP no responde
+  (timeout 3 s, reintentos, circuit breaker): `Hibp:FailOpen=true` (por defecto) la acepta y lo audita; `false` la
+  rechaza con `PASSWORD_CHECK_UNAVAILABLE`. Tampoco se acepta una contraseña igual al email.
 
-## Administración y auditoría
+## Segundo factor (TOTP)
 
-- Roles `Admin` y `User`. Un admin no puede quitarse su propio rol, para borrar a otro admin primero hay que quitarle
-  el rol, y nunca se puede quedar el sistema sin admins (`LAST_ADMIN`).
+- Flujo: `POST /auth/mfa/setup` (devuelve el secreto y un `otpauth://` para el QR) → `POST /auth/mfa/enable` con un
+  código de la app (devuelve **10 códigos de recuperación, una sola vez**). Activar o desactivar revoca las demás
+  sesiones y manda un aviso por mail.
+- Con MFA activo, `POST /auth/login` no devuelve tokens: devuelve `mfaRequired: true` y un `mfaToken` (5 min, un solo
+  uso, 5 intentos) para `POST /auth/login/mfa` con `code` (TOTP) o `recoveryCode`.
+- El secreto se guarda cifrado con **AES-256-GCM** (`SecretEncryption:Keys`, rotables) y atado al id del usuario:
+  copiado a otra fila no descifra. Los códigos de recuperación se guardan hasheados.
+- **Anti-replay**: cada código TOTP sirve una vez aunque siga dentro de sus 30 s, y cada código de recuperación una
+  sola vez; las dos reglas son un UPDATE condicional en la base, así que valen con requests simultáneos y varias
+  instancias (probado contra Postgres).
+- Los códigos incorrectos (en el login y en la gestión) cuentan para el bloqueo por cuenta.
+- Desactivar pide la contraseña y un código TOTP o de recuperación (por si se perdió el teléfono).
+
+## Administración, permisos y auditoría
+
+- **Permisos**: `users.read`, `users.manage`, `roles.read`, `roles.manage`, `roles.assign`, `audit.read`. Cada endpoint
+  de admin pide uno; los roles los agrupan (`/admin/roles`). `Admin` los tiene todos siempre y sus permisos no se
+  editan; `Admin` y `User` no se pueden borrar. Los cambios de permisos de un rol aplican a sus miembros en el
+  request siguiente.
+- **Sin escalada de privilegios**: para otorgar, quitar, asignar o retirar permisos (directo o vía un rol) hay que
+  tenerlos. Alguien con `roles.assign` no puede darse `Admin` ni crear un rol con permisos que no tiene
+  (`PRIVILEGE_ESCALATION`).
+- Un admin no puede quitarse su propio rol, para borrar a otro admin primero hay que quitarle el rol, y nunca se puede
+  quedar el sistema sin admins (`LAST_ADMIN`).
 - `audit_log` registra, en la misma transacción que la acción: logins (ok y fallidos), bloqueos, verificación,
   cambio y reset de contraseña, reuso de refresh token, borrado de cuenta y todas las acciones de admin (con quién la
   hizo, a quién y desde qué IP). Nunca guarda contraseñas ni tokens. Se consulta en `GET /admin/audit`.
@@ -83,8 +113,9 @@ Dependencias: `Api → Application ← Infrastructure` y `Application → Domain
   Todas las contraseñas tienen máximo 128 caracteres.
 - **Bloqueo por cuenta** (Redis): 10 logins fallidos en 15 min bloquean ese email 15 min (`429 ACCOUNT_LOCKED`).
 - **Rate limit por IP** (en memoria, por instancia): 5/min en register, resend y forgot; 10/min en el resto.
-- **Arranque seguro**: fuera de `Development`/`Testing` la API no arranca sin clave de firma, sin SMTP o con un admin
-  sembrado débil, y carga la clave al iniciar (una clave ilegible frena el arranque, no cada request).
+- **Arranque seguro**: fuera de `Development`/`Testing` la API no arranca sin clave de firma, sin clave de cifrado,
+  sin SMTP o con un admin sembrado débil, y carga las claves al iniciar (una clave ilegible frena el arranque, no
+  cada request).
 - **Proxies**: `X-Forwarded-For` solo se acepta de `ForwardedHeaders:KnownProxies` / `KnownNetworks`.
 - **CORS** cerrado salvo los orígenes de `Cors:AllowedOrigins`.
 
@@ -95,6 +126,9 @@ Dependencias: `Api → Application ← Infrastructure` y `Application → Domain
 - Tras 10 intentos fallidos de verificación, el `429` revela que hay una cuenta pendiente con ese email.
 - El outbox guarda el código/token en claro hasta que se entrega (segundos, salvo que el SMTP esté caído).
 - El rate limit por IP no se comparte entre instancias (el bloqueo por cuenta sí).
+- Perder `SecretEncryption:Keys` obliga a todos los usuarios con MFA a configurarlo de nuevo (vía recuperación).
+- El chequeo HIBP manda a un tercero 5 caracteres del hash de cada contraseña nueva; si eso no es aceptable,
+  `Hibp:Enabled=false`.
 
 ## Retención
 
@@ -111,7 +145,7 @@ dotnet run --project src/Identity.Api --launch-profile http
 - API: http://localhost:5205 · Docs (Scalar): http://localhost:5205/scalar · Mails: http://localhost:8025 (Mailpit)
 - Admin sembrado en Development: `admin@identity.local` / `Admin12345`.
 - En Development las migraciones se aplican solas y la clave de firma se genera en `src/Identity.Api/.keys/`
-  (ignorada por git).
+  (ignorada por git), igual que la clave de cifrado de los secretos TOTP.
 - Health: `/health/live` (proceso vivo) y `/health/ready` (Postgres y Redis responden).
 
 ## Producción
@@ -126,24 +160,29 @@ podman build -t identity-migrator --target migrator .   # bundle de migraciones
    si a la base le faltan migraciones.
 2. **Clave de firma**: `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out jwt.pem`, montala como
    secreto y pasá `Jwt__SigningKeys__0__PrivateKeyPath=/run/secrets/jwt.pem` (y opcionalmente `__KeyId`).
-3. Variables: `ConnectionStrings__Postgres`, `ConnectionStrings__Redis`, `Smtp__*`, `Jwt__Issuer` (URL pública),
+3. **Clave de cifrado** (secretos TOTP): `openssl rand -base64 32`, en `SecretEncryption__Keys__0__KeyId=k1` y
+   `SecretEncryption__Keys__0__Key=<base64>`. Guardala bien: sin ella nadie puede usar su MFA.
+4. Variables: `ConnectionStrings__Postgres`, `ConnectionStrings__Redis`, `Smtp__*`, `Jwt__Issuer` (URL pública),
    `Cors__AllowedOrigins__0`, `ForwardedHeaders__KnownNetworks__0` si hay proxy.
-4. Los logs salen en JSON (una línea por evento, con request id y trace id).
+5. Los logs salen en JSON (una línea por evento, con request id y trace id).
 
 ## Endpoints
 
 | Método | Ruta | Auth |
 | --- | --- | --- |
 | POST | `/auth/register` · `/auth/verify-email` · `/auth/resend-verification` | — |
-| POST | `/auth/login` · `/auth/refresh` | — |
+| POST | `/auth/login` · `/auth/login/mfa` · `/auth/refresh` | — |
 | POST | `/auth/forgot-password` · `/auth/reset-password` | — |
 | POST | `/auth/logout` · `/auth/logout-all` · `/auth/change-password` | Bearer |
 | GET / DELETE | `/auth/me` (DELETE = borrado lógico de tu cuenta, pide contraseña) | Bearer |
 | GET / DELETE | `/sessions` · `/sessions/{id}` | Bearer |
-| GET | `/admin/users?page=&pageSize=&includeDeleted=` · `/admin/users/{id}` · `/admin/roles` | Admin |
-| GET | `/admin/audit?userId=&action=&page=&pageSize=` | Admin |
-| DELETE / POST | `/admin/users/{id}` · `/admin/users/{id}/restore` | Admin |
-| POST / DELETE | `/admin/users/{id}/roles` · `/admin/users/{id}/roles/{role}` | Admin |
+| GET / POST | `/auth/mfa` · `/auth/mfa/setup` · `/auth/mfa/enable` · `/auth/mfa/disable` · `/auth/mfa/recovery-codes` | Bearer |
+| GET | `/admin/users?page=&pageSize=&includeDeleted=` · `/admin/users/{id}` | `users.read` |
+| GET | `/admin/roles` · `/admin/permissions` | `roles.read` |
+| POST / PUT / DELETE | `/admin/roles` · `/admin/roles/{name}/permissions` · `/admin/roles/{name}` | `roles.manage` |
+| GET | `/admin/audit?userId=&action=&page=&pageSize=` | `audit.read` |
+| DELETE / POST | `/admin/users/{id}` · `/admin/users/{id}/restore` | `users.manage` |
+| POST / DELETE | `/admin/users/{id}/roles` · `/admin/users/{id}/roles/{role}` | `roles.assign` |
 | GET | `/.well-known/jwks.json` · `/.well-known/openid-configuration` · `/health/live` · `/health/ready` | — |
 
 Ejemplos listos para usar en [`src/Identity.Api/Identity.Api.http`](src/Identity.Api/Identity.Api.http).

@@ -13,6 +13,8 @@ public sealed class SecurityConfigurationTests
     private static readonly Dictionary<string, string?> SafeProduction = new()
     {
         ["Jwt:SigningKeys:0:PrivateKeyPath"] = "/run/secrets/jwt.pem",
+        ["SecretEncryption:Keys:0:KeyId"] = "k1",
+        ["SecretEncryption:Keys:0:Key"] = "q8J3v0YkzP5mH1sW2xR7tN4bC6dF9gL0aE3uI8oKx1Y=",
         ["Smtp:Host"] = "smtp.example.com",
         ["Seed:AdminPassword"] = "",
     };

@@ -23,6 +23,12 @@ public static class SecurityConfigurationExtensions
             errors.Add("Jwt:SigningKeys is empty; provide an RSA private key (PEM) via Jwt__SigningKeys__0__PrivateKeyPath "
                        + "(e.g. `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out jwt.pem`).");
 
+        var hasEncryptionKey = config.GetSection("SecretEncryption:Keys").GetChildren()
+            .Any(k => !string.IsNullOrWhiteSpace(k["Key"]));
+        if (!hasEncryptionKey)
+            errors.Add("SecretEncryption:Keys is empty; it encrypts the TOTP secrets. Provide SecretEncryption__Keys__0__KeyId and "
+                       + "SecretEncryption__Keys__0__Key (32 random bytes, base64: `openssl rand -base64 32`).");
+
         if (string.IsNullOrWhiteSpace(config["Smtp:Host"]))
             errors.Add("Smtp:Host is empty; verification codes and reset tokens would only be written to the logs.");
 

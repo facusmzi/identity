@@ -21,9 +21,50 @@ internal sealed class UserConfiguration : IEntityTypeConfiguration<User>
         b.Property(u => u.PasswordHash).HasMaxLength(256);
         b.Property(u => u.EmailVerificationCodeHash).HasMaxLength(64);
         b.Property(u => u.PasswordResetTokenHash).HasMaxLength(64);
+        b.Property(u => u.MfaSecretEncrypted).HasMaxLength(256);
+        b.Property(u => u.MfaPendingSecretEncrypted).HasMaxLength(256);
         b.HasIndex(u => u.Email).IsUnique().HasFilter(SoftDelete.ActiveOnly);
         b.HasIndex(u => u.DeletedAt);
         b.Ignore(u => u.IsDeleted);
+    }
+}
+
+internal sealed class RolePermissionConfiguration : IEntityTypeConfiguration<RolePermission>
+{
+    public void Configure(EntityTypeBuilder<RolePermission> b)
+    {
+        b.ToTable("role_permissions");
+        b.Property(p => p.Permission).HasMaxLength(64).IsRequired();
+        b.HasIndex(p => new { p.RoleId, p.Permission }).IsUnique().HasFilter(SoftDelete.ActiveOnly);
+        b.HasOne(p => p.Role).WithMany(r => r.RolePermissions).HasForeignKey(p => p.RoleId).OnDelete(DeleteBehavior.Cascade);
+        b.Ignore(p => p.IsDeleted);
+    }
+}
+
+internal sealed class MfaRecoveryCodeConfiguration : IEntityTypeConfiguration<MfaRecoveryCode>
+{
+    public void Configure(EntityTypeBuilder<MfaRecoveryCode> b)
+    {
+        b.ToTable("mfa_recovery_codes");
+        b.Property(c => c.CodeHash).HasMaxLength(64).IsRequired();
+        b.HasIndex(c => new { c.UserId, c.CodeHash });
+        b.HasOne(c => c.User).WithMany(u => u.RecoveryCodes).HasForeignKey(c => c.UserId).OnDelete(DeleteBehavior.Cascade);
+        b.Ignore(c => c.IsDeleted);
+    }
+}
+
+internal sealed class MfaChallengeConfiguration : IEntityTypeConfiguration<MfaChallenge>
+{
+    public void Configure(EntityTypeBuilder<MfaChallenge> b)
+    {
+        b.ToTable("mfa_challenges");
+        b.Property(c => c.Id).ValueGeneratedNever();
+        b.Property(c => c.TokenHash).HasMaxLength(64).IsRequired();
+        b.Property(c => c.IpAddress).HasMaxLength(64);
+        b.Property(c => c.UserAgent).HasMaxLength(512);
+        b.HasIndex(c => c.TokenHash).IsUnique();
+        b.HasIndex(c => c.ExpiresAt);
+        b.HasOne<User>().WithMany().HasForeignKey(c => c.UserId).OnDelete(DeleteBehavior.Cascade);
     }
 }
 

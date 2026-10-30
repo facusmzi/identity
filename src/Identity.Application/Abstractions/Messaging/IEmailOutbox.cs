@@ -12,4 +12,7 @@ public interface IEmailOutbox
 
     /// <param name="link">Reset page URL with the token, when Auth:PasswordResetUrl is configured.</param>
     void EnqueuePasswordReset(string to, string token, string? link);
+
+    /// <summary>"Something changed on your account" (MFA on/off, recovery code used): plain text, no secrets.</summary>
+    void EnqueueSecurityNotice(string to, string subject, string message);
 }
