@@ -23,7 +23,8 @@ jobs:
 
       # Fails if the model changed without a migration.
       - name: Migrations up to date
-        run: dotnet ef migrations has-pending-model-changes -p src/Identity.Infrastructure -s src/Identity.Api -c Release --no-build
+        # Note: for dotnet-ef, -c means --context, so the configuration has to be spelled out.
+        run: dotnet ef migrations has-pending-model-changes -p src/Identity.Infrastructure -s src/Identity.Api --configuration Release --no-build
 
       # Includes the Postgres/Redis suite (Testcontainers uses the runner's Docker).
       - name: Test
