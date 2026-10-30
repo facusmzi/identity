@@ -18,7 +18,7 @@
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.14" />
     <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.23.0" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
-    <PackageReference Include="StackExchange.Redis" Version="3.4.20" />
+    <PackageReference Include="StackExchange.Redis" Version="3.4.29" />
   </ItemGroup>
 
   <PropertyGroup>
