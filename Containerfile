@@ -4,7 +4,7 @@
 # Run the migrator as a deploy step before rolling out the API:
 #   podman run --rm identity-migrator --connection "Host=...;Database=identity;Username=...;Password=..."
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /src
 COPY Identity.sln dotnet-tools.json ./
 COPY src/Identity.Domain/Identity.Domain.csproj src/Identity.Domain/
