@@ -20,7 +20,7 @@ RUN dotnet tool restore \
  && dotnet ef migrations bundle -p src/Identity.Infrastructure -s src/Identity.Api \
       --configuration Release --self-contained -r linux-x64 -o /app/efbundle --force
 
-FROM mcr.microsoft.com/dotnet/runtime-deps:10.0 AS migrator
+FROM mcr.microsoft.com/dotnet/runtime-deps:11.0 AS migrator
 WORKDIR /app
 COPY --from=bundle /app/efbundle .
 USER $APP_UID
